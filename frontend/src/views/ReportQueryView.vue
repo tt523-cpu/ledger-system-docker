@@ -14,6 +14,7 @@ const form = reactive({
 
 const rows = ref([])
 const summary = ref({ income: 0, expense: 0, net: 0 })
+const platformSummaries = ref([])
 const lastQuery = ref({ start_date: '', end_date: '' })
 const paymentBalances = ref([])
 const handover = ref({ shifts: [] })
@@ -104,6 +105,7 @@ async function search() {
     const { data } = await http.get('/reports/query', { params })
     rows.value = data.items
     summary.value = data.summary
+    platformSummaries.value = data.platform_summaries || []
     lastQuery.value = params
 
     if (mode.value === 'day') {
@@ -231,6 +233,16 @@ async function confirmHandover() {
       <el-col :span="8"><el-card>支出合计：{{ summary.expense }}</el-card></el-col>
       <el-col :span="8"><el-card>净营业：{{ summary.net }}</el-card></el-col>
     </el-row>
+
+    <el-card style="margin-bottom: 12px">
+      <template #header>按平台汇总</template>
+      <el-table :data="platformSummaries" border>
+        <el-table-column prop="platform_name" label="平台" width="180" />
+        <el-table-column prop="income" label="充值" />
+        <el-table-column prop="expense" label="支出" />
+        <el-table-column prop="net" label="净营业" />
+      </el-table>
+    </el-card>
 
     <el-table :data="rows" border>
       <el-table-column prop="bill_date" label="日期" width="130" />

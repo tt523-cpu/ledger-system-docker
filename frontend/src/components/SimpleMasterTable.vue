@@ -16,6 +16,10 @@ const editingId = ref(null)
 const form = reactive({ ...props.defaults })
 const editForm = reactive({})
 
+function statusText(status) {
+  return status === 'enabled' ? '启用' : status === 'disabled' ? '停用' : status
+}
+
 function resetForm() {
   Object.keys(form).forEach((k) => {
     form[k] = props.defaults[k] ?? ''
@@ -96,7 +100,7 @@ onMounted(() => {
       </el-table-column>
       <el-table-column prop="status" label="状态" width="100">
         <template #default="{ row }">
-          <span v-if="editingId !== row.id">{{ row.status }}</span>
+          <span v-if="editingId !== row.id">{{ statusText(row.status) }}</span>
           <el-select v-else v-model="editForm.status" style="width: 100px">
             <el-option value="enabled" label="启用" />
             <el-option value="disabled" label="停用" />

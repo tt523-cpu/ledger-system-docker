@@ -13,12 +13,12 @@ from app.models.entities import (
     HandoverPaymentSnapshot,
     HandoverSnapshot,
     PaymentMethod,
+    Platform,
     Transaction,
 )
 from app.models.entities import User
 from app.models.enums import UserRole
 from app.schemas.common import DailySummaryOut, MonthlySummaryOut
-from app.services.summary import get_monthly_summary
 from app.services.summary import rebuild_daily_summary
 
 
@@ -66,10 +66,26 @@ def list_daily_summaries(
 def monthly_summary(
     year: int,
     month: int,
+    platform_id: int | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
 ):
-    data = get_monthly_summary(db, year, month)
+    stmt = select(
+        func.sum(DailySummary.total_income),
+        func.sum(DailySummary.total_expense),
+        func.sum(DailySummary.net_profit),
+    ).where(
+        extract("year", DailySummary.bill_date) == year,
+        extract("month", DailySummary.bill_date) == month,
+    )
+    if platform_id:
+        stmt = stmt.where(DailySummary.platform_id == platform_id)
+    row = db.execute(stmt).first()
+    data = {
+        "total_income": row[0] or 0,
+        "total_expense": row[1] or 0,
+        "net_profit": row[2] or 0,
+    }
     return MonthlySummaryOut(month=f"{year:04d}-{month:02d}", **data)
 
 
@@ -77,22 +93,37 @@ def monthly_summary(
 def monthly_detail(
     year: int,
     month: int,
+    platform_id: int | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
 ):
-    summary = get_monthly_summary(db, year, month)
+    summary_stmt = select(
+        func.sum(DailySummary.total_income),
+        func.sum(DailySummary.total_expense),
+        func.sum(DailySummary.net_profit),
+    ).where(
+        extract("year", DailySummary.bill_date) == year,
+        extract("month", DailySummary.bill_date) == month,
+    )
+    if platform_id:
+        summary_stmt = summary_stmt.where(DailySummary.platform_id == platform_id)
+    summary_row = db.execute(summary_stmt).first()
+    summary = {
+        "total_income": summary_row[0] or 0,
+        "total_expense": summary_row[1] or 0,
+        "net_profit": summary_row[2] or 0,
+    }
 
-    expense_rows = db.execute(
-        select(Transaction.category_id, func.sum(Transaction.amount))
-        .where(
-            extract("year", Transaction.bill_date) == year,
-            extract("month", Transaction.bill_date) == month,
-            Transaction.type == "expense",
-            Transaction.deleted_at.is_(None),
-            Transaction.category_id.is_not(None),
-        )
-        .group_by(Transaction.category_id)
-    ).all()
+    expense_stmt = select(Transaction.category_id, func.sum(Transaction.amount)).where(
+        extract("year", Transaction.bill_date) == year,
+        extract("month", Transaction.bill_date) == month,
+        Transaction.type == "expense",
+        Transaction.deleted_at.is_(None),
+        Transaction.category_id.is_not(None),
+    )
+    if platform_id:
+        expense_stmt = expense_stmt.where(Transaction.platform_id == platform_id)
+    expense_rows = db.execute(expense_stmt.group_by(Transaction.category_id)).all()
     category_map = {c.id: c.name for c in db.execute(select(Category)).scalars().all()}
     expense_items = [
         {
@@ -118,6 +149,7 @@ def monthly_detail(
                 Transaction.payment_method_id == pm.id,
                 Transaction.bill_date < month_start,
                 Transaction.deleted_at.is_(None),
+                Transaction.platform_id == platform_id if platform_id else True,
             )
             .group_by(Transaction.type)
         ).all()
@@ -135,6 +167,7 @@ def monthly_detail(
                 Transaction.bill_date >= month_start,
                 Transaction.bill_date < next_month_start,
                 Transaction.deleted_at.is_(None),
+                Transaction.platform_id == platform_id if platform_id else True,
             )
             .group_by(Transaction.type)
         ).all()
@@ -158,8 +191,34 @@ def monthly_detail(
             }
         )
 
+    platform_rows_stmt = select(
+        DailySummary.platform_id,
+        func.sum(DailySummary.total_income),
+        func.sum(DailySummary.total_expense),
+        func.sum(DailySummary.net_profit),
+    ).where(
+        extract("year", DailySummary.bill_date) == year,
+        extract("month", DailySummary.bill_date) == month,
+    )
+    if platform_id:
+        platform_rows_stmt = platform_rows_stmt.where(DailySummary.platform_id == platform_id)
+    platform_rows = db.execute(platform_rows_stmt.group_by(DailySummary.platform_id)).all()
+    platform_name_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
+    platform_summaries = [
+        {
+            "platform_id": r[0],
+            "platform_name": platform_name_map.get(r[0], f"平台#{r[0]}"),
+            "income": float(r[1] or 0),
+            "expense": float(r[2] or 0),
+            "net": float(r[3] or 0),
+        }
+        for r in platform_rows
+    ]
+
     return {
         "month": f"{year:04d}-{month:02d}",
+        "platform_id": platform_id,
+        "platform_name": None if not platform_id else db.execute(select(Platform.name).where(Platform.id == platform_id)).scalar_one_or_none(),
         "summary": {
             "income": float(summary["total_income"]),
             "expense": float(summary["total_expense"]),
@@ -167,6 +226,7 @@ def monthly_detail(
         },
         "expense_items": expense_items,
         "account_balances": account_balances,
+        "platform_summaries": platform_summaries,
     }
 
 
@@ -343,9 +403,33 @@ def report_query(
             }
         )
 
+    platform_summary_stmt = select(
+        DailySummary.platform_id,
+        func.sum(DailySummary.total_income),
+        func.sum(DailySummary.total_expense),
+        func.sum(DailySummary.net_profit),
+    ).where(DailySummary.bill_date >= start_date, DailySummary.bill_date <= end_date)
+    if shift_id:
+        platform_summary_stmt = platform_summary_stmt.where(DailySummary.shift_id == shift_id)
+    if platform_id:
+        platform_summary_stmt = platform_summary_stmt.where(DailySummary.platform_id == platform_id)
+    platform_summary_rows = db.execute(platform_summary_stmt.group_by(DailySummary.platform_id)).all()
+    platform_name_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
+    platform_summaries = [
+        {
+            "platform_id": r[0],
+            "platform_name": platform_name_map.get(r[0], f"平台#{r[0]}"),
+            "income": float(r[1] or 0),
+            "expense": float(r[2] or 0),
+            "net": float(r[3] or 0),
+        }
+        for r in platform_summary_rows
+    ]
+
     return {
         "items": items,
         "summary": {"income": total_income, "expense": total_expense, "net": total_net},
+        "platform_summaries": platform_summaries,
         "expense_items": expense_items,
         "start_date": start_date,
         "end_date": end_date,

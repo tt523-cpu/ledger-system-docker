@@ -71,12 +71,20 @@ def list_logs(
 
 
 @router.get("/charts/profit-by-platform")
-def profit_by_platform(db: Session = Depends(get_db), _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value}))):
+def profit_by_platform(
+    platform_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+):
     rows = db.execute(
         select(Transaction.platform_id, func.sum(Transaction.amount), Transaction.type)
-        .where(Transaction.deleted_at.is_(None))
+        .where(
+            Transaction.deleted_at.is_(None),
+            Transaction.platform_id == platform_id if platform_id else True,
+        )
         .group_by(Transaction.platform_id, Transaction.type)
     ).all()
+    platform_name_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
     data: dict[int, dict[str, float]] = {}
     for platform_id, amount_sum, tx_type in rows:
         if platform_id not in data:
@@ -87,17 +95,26 @@ def profit_by_platform(db: Session = Depends(get_db), _: User = Depends(require_
             data[platform_id]["expense"] += float(amount_sum or 0)
     result = []
     for platform_id, item in data.items():
-        result.append({"platform_id": platform_id, "net": item["income"] - item["expense"]})
+        result.append(
+            {
+                "platform_id": platform_id,
+                "platform_name": platform_name_map.get(platform_id, f"平台#{platform_id}"),
+                "net": item["income"] - item["expense"],
+            }
+        )
     return result
 
 
 @router.get("/charts/income-expense-trend")
-def income_expense_trend(db: Session = Depends(get_db), _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value}))):
-    rows = db.execute(
-        select(DailySummary.bill_date, func.sum(DailySummary.total_income), func.sum(DailySummary.total_expense), func.sum(DailySummary.net_profit))
-        .group_by(DailySummary.bill_date)
-        .order_by(DailySummary.bill_date.asc())
-    ).all()
+def income_expense_trend(
+    platform_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+):
+    stmt = select(DailySummary.bill_date, func.sum(DailySummary.total_income), func.sum(DailySummary.total_expense), func.sum(DailySummary.net_profit))
+    if platform_id:
+        stmt = stmt.where(DailySummary.platform_id == platform_id)
+    rows = db.execute(stmt.group_by(DailySummary.bill_date).order_by(DailySummary.bill_date.asc())).all()
     return [
         {"date": r[0].isoformat(), "income": float(r[1] or 0), "expense": float(r[2] or 0), "net": float(r[3] or 0)}
         for r in rows

@@ -41,6 +41,7 @@ body {
 .main {
   flex: 1;
   padding: 12px;
+  min-width: 0;
 }
 
 .topbar {
@@ -67,5 +68,39 @@ body {
 
   .sidebar {
     width: 100%;
+    padding: 8px;
+  }
+
+  .sidebar h2 {
+    font-size: 18px;
+    margin: 6px 10px;
+  }
+
+  .main {
+    padding: 8px;
+  }
+
+  .topbar {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .el-form.el-form--inline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .el-form.el-form--inline .el-form-item {
+    margin-right: 0;
+  }
+
+  .el-card {
+    border-radius: 8px;
+  }
+
+  .el-table {
+    font-size: 13px;
   }
 }

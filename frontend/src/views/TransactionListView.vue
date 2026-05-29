@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import http from '../api/http'
@@ -35,6 +35,16 @@ const auth = useAuthStore()
 const editing = ref(false)
 const saving = ref(false)
 const editForm = reactive({ id: null, type: 'income', platform_id: null, amount: 0, remark: '' })
+const viewportHeight = ref(window.innerHeight)
+
+const tableHeight = computed(() => {
+  if (viewportHeight.value < 760) return 360
+  return Math.max(420, viewportHeight.value - 330)
+})
+
+function onResize() {
+  viewportHeight.value = window.innerHeight
+}
 
 async function load() {
   const params = buildQueryParams()
@@ -155,7 +165,12 @@ async function saveEdit() {
 }
 
 onMounted(async () => {
+  window.addEventListener('resize', onResize)
   await Promise.all([load(), loadPlatforms()])
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
 })
 </script>
 
@@ -193,7 +208,7 @@ onMounted(async () => {
       <el-button type="primary" @click="onFilterChange">查询</el-button>
     </el-form>
 
-    <el-table :data="items" border max-height="560">
+    <el-table :data="items" border :max-height="tableHeight">
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column prop="bill_date" label="日期" width="120" />
       <el-table-column label="平台" width="140">
