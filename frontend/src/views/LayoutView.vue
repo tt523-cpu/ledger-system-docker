@@ -34,7 +34,7 @@ function logout() {
 <template>
   <div class="layout">
     <aside class="sidebar">
-      <h2>记账系统</h2>
+      <h2>小七记帐系统</h2>
       <el-menu router :default-active="$route.path">
         <el-menu-item v-for="m in visibleMenus" :index="m.path" :key="m.path">{{ m.label }}</el-menu-item>
       </el-menu>
