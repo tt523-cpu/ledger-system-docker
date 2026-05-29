@@ -35,7 +35,7 @@ const entryTypes = ref([])
 const auth = useAuthStore()
 const editing = ref(false)
 const saving = ref(false)
-const editForm = reactive({ id: null, type: 'income', type_label: '充值', category_id: null, platform_id: null, amount: 0, remark: '' })
+const editForm = reactive({ id: null, type: 'income', type_label: '充值', category_id: null, payment_method_id: null, platform_id: null, amount: 0, remark: '' })
 const viewportHeight = ref(window.innerHeight)
 
 const tableHeight = computed(() => {
@@ -150,6 +150,7 @@ function startEdit(row) {
   editForm.type = row.type
   editForm.type_label = row.biz_type_label || (row.type === 'income' ? '充值' : row.type === 'expense' ? '支出' : '回冲')
   editForm.category_id = row.category_id ?? null
+  editForm.payment_method_id = row.payment_method_id ?? null
   editForm.platform_id = row.platform_id
   editForm.amount = Number(row.amount)
   editForm.remark = row.remark || ''
@@ -180,6 +181,7 @@ async function saveEdit() {
       type: editForm.type,
       biz_type_label: editForm.type_label,
       category_id: finalCategoryId,
+      payment_method_id: editForm.payment_method_id,
       platform_id: editForm.platform_id,
       amount: editForm.amount,
       remark: editForm.remark,
@@ -294,6 +296,11 @@ onBeforeUnmount(() => {
         <el-form-item label="平台">
           <el-select v-model="editForm.platform_id" style="width: 220px">
             <el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="账户">
+          <el-select v-model="editForm.payment_method_id" clearable filterable style="width: 220px">
+            <el-option v-for="a in accounts" :key="a.id" :label="a.name" :value="a.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="项目">

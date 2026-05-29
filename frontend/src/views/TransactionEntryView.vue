@@ -83,10 +83,25 @@ async function loadMaster() {
 }
 
 async function submit() {
-  form.lines.forEach((line) => {
+  const validLines = form.lines
+    .map((line) => ({ ...line }))
+    .filter((line) => Number(line.amount || 0) > 0)
+
+  if (validLines.length === 0) {
+    ElMessage.warning('请至少填写一行金额大于0的流水')
+    return
+  }
+
+  validLines.forEach((line) => {
     if (!line.requires_category) line.category_id = null
   })
-  await http.post('/transactions/batch', form)
+
+  await http.post('/transactions/batch', {
+    bill_date: form.bill_date,
+    shift_id: form.shift_id,
+    platform_id: form.platform_id,
+    lines: validLines,
+  })
   ElMessage.success('保存成功')
   form.lines = [createEmptyLine(), createEmptyLine()]
 }
