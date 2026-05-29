@@ -1,0 +1,71 @@
+:root {
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  color: #222;
+  background: linear-gradient(120deg, #f3f7ff 0%, #f8fbff 50%, #eef6f5 100%);
+}
+
+body {
+  margin: 0;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 220px;
+  background: #0f2742;
+  color: #fff;
+  padding: 10px;
+}
+
+.sidebar h2 {
+  margin: 10px;
+  font-size: 20px;
+}
+
+.sidebar .el-menu {
+  border-right: none;
+  background: transparent;
+}
+
+.sidebar .el-menu-item {
+  color: #dfefff;
+}
+
+.main {
+  flex: 1;
+  padding: 12px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.login-card {
+  width: 380px;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+  }
+}
