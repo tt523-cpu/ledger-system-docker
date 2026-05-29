@@ -8,13 +8,34 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import require_roles
-from app.models.entities import AuditLog, Category, Transaction, User
+from app.models.entities import AuditLog, Category, EntryType, EntryTypeSetting, Transaction, User
 from app.models.enums import TransactionType, UserRole
 from app.schemas.common import BatchTransactionCreate, OffsetTransactionCreate
+from app.services.month_lock import assert_month_not_locked
 from app.services.summary import rebuild_daily_summary_for_date
 
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
+
+ADMIN_UPDATABLE_FIELDS = {
+    "type",
+    "platform_id",
+    "category_id",
+    "account_id",
+    "target_account_id",
+    "payment_method_id",
+    "amount",
+    "remark",
+    "biz_type_label",
+}
+
+BOOKKEEPER_UPDATABLE_FIELDS = {
+    "category_id",
+    "payment_method_id",
+    "amount",
+    "remark",
+    "biz_type_label",
+}
 
 
 def normalize_tx_type(raw_type: str) -> str:
@@ -41,6 +62,18 @@ def default_type_label(raw_type: str, normalized: str) -> str:
     return raw_type
 
 
+def type_requires_category(db: Session, type_label: str, normalized_type: str) -> bool:
+    if normalized_type != TransactionType.EXPENSE.value:
+        return False
+    et = db.execute(select(EntryType).where(EntryType.name == type_label)).scalar_one_or_none()
+    if et is None:
+        return type_label == "支出"
+    st = db.execute(select(EntryTypeSetting).where(EntryTypeSetting.entry_type_id == et.id)).scalar_one_or_none()
+    if st is None:
+        return type_label == "支出"
+    return bool(st.requires_category)
+
+
 @router.post("/batch")
 def create_batch_transactions(
     payload: BatchTransactionCreate,
@@ -49,6 +82,10 @@ def create_batch_transactions(
 ):
     if not payload.lines:
         raise HTTPException(status_code=400, detail="lines cannot be empty")
+    try:
+        assert_month_not_locked(db, payload.bill_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
 
     if current_user.role == UserRole.BOOKKEEPER.value:
         if current_user.platform_id is None:
@@ -69,8 +106,9 @@ def create_batch_transactions(
         if normalized_type == TransactionType.TRANSFER.value:
             raise HTTPException(status_code=400, detail="transfer is disabled")
 
-        if normalized_type == TransactionType.EXPENSE.value and not line.category_id:
-            raise HTTPException(status_code=400, detail="category_id is required for expense")
+        requires_category = type_requires_category(db, type_label, normalized_type)
+        if requires_category and not line.category_id:
+            raise HTTPException(status_code=400, detail="category_id is required for 支出")
 
         if line.category_id is not None:
             category = db.execute(select(Category).where(Category.id == line.category_id)).scalar_one_or_none()
@@ -172,6 +210,11 @@ def update_transaction(
     tx = db.get(Transaction, tx_id)
     if tx is None or tx.deleted_at is not None:
         raise HTTPException(status_code=404, detail="transaction not found")
+
+    if current_user.role == UserRole.BOOKKEEPER.value:
+        if current_user.platform_id is None or tx.platform_id != current_user.platform_id:
+            raise HTTPException(status_code=403, detail="bookkeeper can only edit own platform transactions")
+
     old_bill_date = tx.bill_date
     old_shift_id = tx.shift_id
     old_platform_id = tx.platform_id
@@ -183,22 +226,24 @@ def update_transaction(
         "remark": tx.remark,
         "biz_type_label": tx.biz_type_label,
     }
-    updatable = {
-        "type",
-        "platform_id",
-        "category_id",
-        "account_id",
-        "target_account_id",
-        "payment_method_id",
-        "amount",
-        "remark",
-        "biz_type_label",
-    }
+    updatable = ADMIN_UPDATABLE_FIELDS if current_user.role == UserRole.ADMIN.value else BOOKKEEPER_UPDATABLE_FIELDS
+
+    blocked = [k for k in payload.keys() if k not in updatable]
+    if blocked:
+        raise HTTPException(status_code=403, detail=f"no permission to edit fields: {', '.join(blocked)}")
+
     for k, v in payload.items():
         if k in updatable:
             if k == "type":
                 v = normalize_tx_type(v)
             setattr(tx, k, v)
+
+    label_for_check = tx.biz_type_label or default_type_label(tx.type, tx.type)
+    requires_category = type_requires_category(db, label_for_check, tx.type)
+    if requires_category and not tx.category_id:
+        raise HTTPException(status_code=400, detail="category_id is required for 支出")
+    if not requires_category:
+        tx.category_id = None
 
     db.flush()
     rebuild_daily_summary_for_date(db, tx.bill_date)
@@ -226,6 +271,14 @@ def soft_delete_transaction(
     tx = db.get(Transaction, tx_id)
     if tx is None or tx.deleted_at is not None:
         raise HTTPException(status_code=404, detail="transaction not found")
+
+    if current_user.role == UserRole.BOOKKEEPER.value:
+        if current_user.platform_id is None or tx.platform_id != current_user.platform_id:
+            raise HTTPException(status_code=403, detail="bookkeeper can only delete own platform transactions")
+    try:
+        assert_month_not_locked(db, tx.bill_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
 
     tx.deleted_at = datetime.utcnow()
     db.flush()
@@ -257,6 +310,10 @@ def create_offset_transactions(
         if payload.platform_id is None:
             raise HTTPException(status_code=400, detail="platform_id is required")
         effective_platform_id = payload.platform_id
+    try:
+        assert_month_not_locked(db, payload.bill_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
 
     biz_group_no = uuid4().hex[:16]
 
@@ -301,3 +358,7 @@ def create_offset_transactions(
     )
     db.commit()
     return {"created_count": 2, "biz_group_no": biz_group_no}
+    try:
+        assert_month_not_locked(db, tx.bill_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc

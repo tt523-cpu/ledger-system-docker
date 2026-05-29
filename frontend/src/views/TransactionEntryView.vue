@@ -15,7 +15,7 @@ const form = reactive({
   bill_date: new Date().toISOString().slice(0, 10),
   shift_id: null,
   platform_id: null,
-  lines: [{ type: 'income', type_label: '充值', category_id: null, amount: 0, payment_method_id: null, remark: '' }],
+  lines: [{ type: 'income', type_label: '充值', requires_category: false, category_id: null, amount: 0, payment_method_id: null, remark: '' }],
 })
 
 function createEmptyLine() {
@@ -23,6 +23,7 @@ function createEmptyLine() {
   return {
     type: firstType ? firstType.effect : 'income',
     type_label: firstType ? firstType.name : '充值',
+    requires_category: firstType ? !!firstType.requires_category : false,
     category_id: null,
     amount: 0,
     payment_method_id: null,
@@ -50,6 +51,7 @@ async function loadMaster() {
   if (entryTypes.value.length > 0 && form.lines.length > 0 && !form.lines[0].type_label) {
     form.lines[0].type_label = entryTypes.value[0].name
     form.lines[0].type = entryTypes.value[0].effect
+    form.lines[0].requires_category = !!entryTypes.value[0].requires_category
   }
 
   if (!form.shift_id && shifts.value.length > 0) {
@@ -82,7 +84,7 @@ async function loadMaster() {
 
 async function submit() {
   form.lines.forEach((line) => {
-    if (line.type !== 'expense') line.category_id = null
+    if (!line.requires_category) line.category_id = null
   })
   await http.post('/transactions/batch', form)
   ElMessage.success('保存成功')
@@ -94,7 +96,8 @@ function onTypeChange(row, selectedId) {
   if (!t) return
   row.type = t.effect
   row.type_label = t.name
-  if (row.type !== 'expense') row.category_id = null
+  row.requires_category = !!t.requires_category
+  if (!row.requires_category) row.category_id = null
 }
 
 onMounted(loadMaster)
@@ -109,6 +112,7 @@ onMounted(loadMaster)
       <el-form-item v-if="auth.role !== 'bookkeeper'" label="平台"><el-select v-model="form.platform_id" style="width: 180px"><el-option v-for="i in platforms" :key="i.id" :value="i.id" :label="i.name" /></el-select></el-form-item>
     </el-form>
 
+    <div class="table-scroll-wrap" data-hint="左右滑动查看更多列">
     <el-table :data="form.lines" border>
       <el-table-column label="类型" width="160">
         <template #default="{ row }">
@@ -119,14 +123,17 @@ onMounted(loadMaster)
       </el-table-column>
       <el-table-column label="项目" width="210">
         <template #default="{ row }">
-          <el-select v-if="row.type === 'expense'" v-model="row.category_id" placeholder="仅支出需要项目">
+          <el-select
+            v-model="row.category_id"
+            :disabled="!row.requires_category"
+            :placeholder="row.requires_category ? '请选择项目' : '-'"
+          >
             <el-option v-for="i in categories.filter((x) => x.type === 'expense')" :key="i.id" :value="i.id" :label="i.name" />
           </el-select>
-          <span v-else style="color:#999">无需项目</span>
         </template>
       </el-table-column>
       <el-table-column label="金额" width="140">
-        <template #default="{ row }"><el-input-number v-model="row.amount" :min="0" :precision="2" /></template>
+        <template #default="{ row }"><el-input-number v-model="row.amount" :min="0" :precision="2" inputmode="decimal" /></template>
       </el-table-column>
       <el-table-column label="账户" width="180">
         <template #default="{ row }"><el-select v-model="row.payment_method_id" placeholder="选择账户"><el-option v-for="i in accounts" :key="i.id" :value="i.id" :label="i.name" /></el-select></template>
@@ -135,7 +142,8 @@ onMounted(loadMaster)
         <template #default="{ row }"><el-input v-model="row.remark" /></template>
       </el-table-column>
     </el-table>
-    <div style="margin-top: 12px">
+    </div>
+    <div class="page-actions">
       <el-button @click="addRow">新增一行</el-button>
       <el-button type="primary" @click="submit">保存并继续</el-button>
     </div>

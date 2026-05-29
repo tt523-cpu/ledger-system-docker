@@ -6,7 +6,7 @@ from app.core.database import get_db
 from app.core.deps import require_roles
 from app.core.permissions import MODULES, DEFAULT_ROLE_MODULES, enabled_modules_for_role, replace_role_modules
 from app.core.security import get_password_hash
-from app.models.entities import Account, Category, EntryType, PaymentMethod, Platform, Shift, User
+from app.models.entities import Account, AuditLog, Category, EntryType, EntryTypeSetting, PaymentMethod, Platform, Shift, User
 from app.models.enums import UserRole
 from app.schemas.common import AccountCreate, CategoryCreate, EntryTypeCreate, MasterDataCreate, PaymentMethodCreate, ShiftCreate
 
@@ -150,9 +150,18 @@ def create_entry_type(
 ):
     obj = EntryType(name=payload.name, effect=payload.effect, sort_order=payload.sort_order, status=payload.status)
     db.add(obj)
+    db.flush()
+    db.add(EntryTypeSetting(entry_type_id=obj.id, requires_category=payload.requires_category))
     db.commit()
     db.refresh(obj)
-    return obj
+    return {
+        "id": obj.id,
+        "name": obj.name,
+        "effect": obj.effect,
+        "sort_order": obj.sort_order,
+        "status": obj.status,
+        "requires_category": payload.requires_category,
+    }
 
 
 @router.get("/entry-types")
@@ -160,7 +169,21 @@ def list_entry_types(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
 ):
-    return db.execute(select(EntryType).order_by(EntryType.sort_order.asc(), EntryType.id.asc())).scalars().all()
+    rows = db.execute(select(EntryType).order_by(EntryType.sort_order.asc(), EntryType.id.asc())).scalars().all()
+    setting_map = {s.entry_type_id: s.requires_category for s in db.execute(select(EntryTypeSetting)).scalars().all()}
+    result = []
+    for r in rows:
+        result.append(
+            {
+                "id": r.id,
+                "name": r.name,
+                "effect": r.effect,
+                "sort_order": r.sort_order,
+                "status": r.status,
+                "requires_category": setting_map.get(r.id, r.name == "支出"),
+            }
+        )
+    return result
 
 
 @router.put("/entry-types/{entry_type_id}")
@@ -177,9 +200,21 @@ def update_entry_type(
     obj.effect = payload.effect
     obj.sort_order = payload.sort_order
     obj.status = payload.status
+    setting = db.execute(select(EntryTypeSetting).where(EntryTypeSetting.entry_type_id == obj.id)).scalar_one_or_none()
+    if setting is None:
+        setting = EntryTypeSetting(entry_type_id=obj.id, requires_category=payload.requires_category)
+        db.add(setting)
+    else:
+        setting.requires_category = payload.requires_category
     db.commit()
-    db.refresh(obj)
-    return obj
+    return {
+        "id": obj.id,
+        "name": obj.name,
+        "effect": obj.effect,
+        "sort_order": obj.sort_order,
+        "status": obj.status,
+        "requires_category": payload.requires_category,
+    }
 
 
 @router.delete("/entry-types/{entry_type_id}")
@@ -191,6 +226,9 @@ def delete_entry_type(
     obj = db.get(EntryType, entry_type_id)
     if obj is None:
         raise HTTPException(status_code=404, detail="entry type not found")
+    setting = db.execute(select(EntryTypeSetting).where(EntryTypeSetting.entry_type_id == obj.id)).scalar_one_or_none()
+    if setting is not None:
+        db.delete(setting)
     db.delete(obj)
     db.commit()
     return {"ok": True}
@@ -397,6 +435,32 @@ def delete_user(
     if user is None:
         raise HTTPException(status_code=404, detail="user not found")
     db.delete(user)
+    db.commit()
+    return {"ok": True}
+
+
+@router.put("/users/{user_id}/password")
+def reset_user_password(
+    user_id: int,
+    new_password: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+):
+    if len(new_password or "") < 6:
+        raise HTTPException(status_code=400, detail="password must be at least 6 chars")
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    user.password_hash = get_password_hash(new_password)
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            module="users",
+            action="reset_password",
+            before_data=None,
+            after_data=f"target_user_id={user.id}",
+        )
+    )
     db.commit()
     return {"ok": True}
 

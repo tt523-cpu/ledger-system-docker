@@ -6,8 +6,17 @@ import http from '../api/http'
 const form = reactive({
   before_date: '',
   bill_date: '',
+  lock_year: new Date().getFullYear(),
+  lock_month: new Date().getMonth() + 1,
 })
 const restoring = ref(false)
+const monthLocks = ref([])
+const backupFiles = ref([])
+
+async function loadMonthLocks() {
+  const { data } = await http.get('/system/month-locks')
+  monthLocks.value = data
+}
 
 async function exportBackup() {
   const res = await http.get('/system/backup/export', { responseType: 'blob' })
@@ -21,6 +30,23 @@ async function exportBackup() {
   window.URL.revokeObjectURL(url)
 }
 
+async function createServerBackup() {
+  try {
+    const { data } = await http.post('/system/backup/create')
+    ElMessage.success(`服务器备份完成：${data.backup_file}`)
+    await loadBackupFiles()
+  } catch (err) {
+    const detail = err?.response?.data?.detail
+    const status = err?.response?.status
+    ElMessage.error(detail ? `手动备份失败：${detail}` : `手动备份失败（HTTP ${status || '-'})`)
+  }
+}
+
+async function loadBackupFiles() {
+  const { data } = await http.get('/system/backup/files')
+  backupFiles.value = data
+}
+
 async function restoreBackup(file) {
   const ok = await ElMessageBox.confirm('恢复会覆盖当前全部数据，确认继续？', '高风险操作', { type: 'warning' }).catch(() => null)
   if (!ok) return false
@@ -30,6 +56,7 @@ async function restoreBackup(file) {
     fd.append('file', file.raw)
     await http.post('/system/backup/restore', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
     ElMessage.success('恢复完成')
+    await loadBackupFiles()
   } finally {
     restoring.value = false
   }
@@ -44,7 +71,8 @@ async function deleteBefore() {
   const ok = await ElMessageBox.confirm(`确认删除 ${form.before_date} 之前的数据？`, '高风险操作', { type: 'warning' }).catch(() => null)
   if (!ok) return
   await http.post('/system/data/delete-before', null, { params: { before_date: form.before_date } })
-  ElMessage.success('删除完成')
+  ElMessage.success('删除完成，已自动生成服务器备份')
+  await loadBackupFiles()
 }
 
 async function deleteByDate() {
@@ -55,8 +83,44 @@ async function deleteByDate() {
   const ok = await ElMessageBox.confirm(`确认删除 ${form.bill_date} 当天数据？`, '高风险操作', { type: 'warning' }).catch(() => null)
   if (!ok) return
   await http.post('/system/data/delete-by-date', null, { params: { bill_date: form.bill_date } })
-  ElMessage.success('删除完成')
+  ElMessage.success('删除完成，已自动生成服务器备份')
+  await loadBackupFiles()
 }
+
+async function lockMonth() {
+  await http.post('/system/month-lock', null, { params: { year: form.lock_year, month: form.lock_month } })
+  ElMessage.success('月账已锁定')
+  await loadMonthLocks()
+}
+
+async function unlockMonth() {
+  await http.delete('/system/month-lock', { params: { year: form.lock_year, month: form.lock_month } })
+  ElMessage.success('月账已解锁')
+  await loadMonthLocks()
+}
+
+async function downloadBackupFile(filename) {
+  const res = await http.get(`/system/backup/files/${filename}`, { responseType: 'blob' })
+  const url = window.URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.URL.revokeObjectURL(url)
+}
+
+async function deleteBackupFile(filename) {
+  const ok = await ElMessageBox.confirm(`确认删除备份文件 ${filename} ?`, '提示', { type: 'warning' }).catch(() => null)
+  if (!ok) return
+  await http.delete(`/system/backup/files/${filename}`)
+  ElMessage.success('备份文件已删除')
+  await loadBackupFiles()
+}
+
+loadMonthLocks()
+loadBackupFiles()
 </script>
 
 <template>
@@ -66,11 +130,24 @@ async function deleteByDate() {
     <el-alert title="以下操作请仅管理员使用" type="warning" show-icon style="margin-bottom: 12px" />
 
     <el-space wrap>
+      <el-button type="success" @click="createServerBackup">手动备份到服务器</el-button>
       <el-button type="primary" @click="exportBackup">导出备份(JSON)</el-button>
       <el-upload :show-file-list="false" :auto-upload="false" :on-change="restoreBackup">
         <el-button :loading="restoring" type="danger">恢复备份(JSON)</el-button>
       </el-upload>
     </el-space>
+
+    <el-table :data="backupFiles" border style="margin-top: 12px">
+      <el-table-column prop="filename" label="备份文件" />
+      <el-table-column prop="size" label="大小(字节)" width="140" />
+      <el-table-column prop="modified_at" label="修改时间" width="220" />
+      <el-table-column label="操作" width="180">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="downloadBackupFile(row.filename)">下载</el-button>
+          <el-button link type="danger" @click="deleteBackupFile(row.filename)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
 
     <el-divider />
 
@@ -91,5 +168,25 @@ async function deleteByDate() {
         <el-button type="danger" @click="deleteByDate">执行删除</el-button>
       </el-form-item>
     </el-form>
+
+    <el-divider />
+
+    <el-form inline>
+      <el-form-item label="锁账年份"><el-input-number v-model="form.lock_year" :min="2020" /></el-form-item>
+      <el-form-item label="锁账月份"><el-input-number v-model="form.lock_month" :min="1" :max="12" /></el-form-item>
+      <el-form-item>
+        <el-button type="warning" @click="lockMonth">锁定该月</el-button>
+        <el-button @click="unlockMonth">解锁该月</el-button>
+      </el-form-item>
+    </el-form>
+
+    <el-table :data="monthLocks" border style="margin-top: 12px">
+      <el-table-column prop="lock_month" label="月份" width="120" />
+      <el-table-column label="状态" width="120">
+        <template #default="{ row }">{{ row.is_locked ? '已锁定' : '未锁定' }}</template>
+      </el-table-column>
+      <el-table-column prop="locked_by" label="操作人ID" width="120" />
+      <el-table-column prop="locked_at" label="操作时间" />
+    </el-table>
   </el-card>
 </template>

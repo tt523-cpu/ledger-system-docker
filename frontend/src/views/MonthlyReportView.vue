@@ -8,6 +8,10 @@ const data = ref(null)
 const detail = ref({ summary: { income: 0, expense: 0, net: 0 }, expense_items: [], account_balances: [], platform_summaries: [] })
 const platforms = ref([])
 
+function fmtAmount(v) {
+  return Number(v || 0).toFixed(2)
+}
+
 async function loadPlatforms() {
   const { data } = await http.get('/master/platforms')
   platforms.value = data
@@ -49,18 +53,18 @@ onMounted(loadPlatforms)
     <el-descriptions v-if="data" :column="2" border style="margin-top:12px">
       <el-descriptions-item label="月份">{{ data.month }}</el-descriptions-item>
       <el-descriptions-item label="平台">{{ detail.platform_name || '全部平台' }}</el-descriptions-item>
-      <el-descriptions-item label="总充值">{{ data.total_income }}</el-descriptions-item>
-      <el-descriptions-item label="总支出">{{ data.total_expense }}</el-descriptions-item>
-      <el-descriptions-item label="净盈利">{{ data.net_profit }}</el-descriptions-item>
+      <el-descriptions-item label="总充值">{{ fmtAmount(data.total_income) }}</el-descriptions-item>
+      <el-descriptions-item label="总支出">{{ fmtAmount(data.total_expense) }}</el-descriptions-item>
+      <el-descriptions-item label="净盈利">{{ fmtAmount(data.net_profit) }}</el-descriptions-item>
     </el-descriptions>
 
     <el-card style="margin-top:12px">
       <template #header>按平台汇总</template>
       <el-table :data="detail.platform_summaries || []" border>
         <el-table-column prop="platform_name" label="平台" />
-        <el-table-column prop="income" label="充值" />
-        <el-table-column prop="expense" label="支出" />
-        <el-table-column prop="net" label="净盈利" />
+        <el-table-column prop="income" label="充值"><template #default="{ row }">{{ fmtAmount(row.income) }}</template></el-table-column>
+        <el-table-column prop="expense" label="支出"><template #default="{ row }">{{ fmtAmount(row.expense) }}</template></el-table-column>
+        <el-table-column prop="net" label="净盈利"><template #default="{ row }">{{ fmtAmount(row.net) }}</template></el-table-column>
       </el-table>
     </el-card>
 
@@ -68,7 +72,7 @@ onMounted(loadPlatforms)
       <template #header>支出项目汇总</template>
       <el-table :data="detail.expense_items" border>
         <el-table-column prop="category_name" label="项目" />
-        <el-table-column prop="amount" label="金额" />
+        <el-table-column prop="amount" label="金额"><template #default="{ row }">{{ fmtAmount(row.amount) }}</template></el-table-column>
       </el-table>
     </el-card>
 
@@ -77,10 +81,10 @@ onMounted(loadPlatforms)
       <el-table :data="detail.account_balances" border>
         <el-table-column prop="payment_method_name" label="账户" />
         <el-table-column prop="channel_kind" label="通道类型" />
-        <el-table-column prop="opening_balance" label="期初余额" />
-        <el-table-column prop="income" label="本月收入" />
-        <el-table-column prop="expense" label="本月支出" />
-        <el-table-column prop="closing_balance" label="期末余额" />
+        <el-table-column prop="opening_balance" label="期初余额"><template #default="{ row }">{{ fmtAmount(row.opening_balance) }}</template></el-table-column>
+        <el-table-column prop="income" label="本月收入"><template #default="{ row }">{{ fmtAmount(row.income) }}</template></el-table-column>
+        <el-table-column prop="expense" label="本月支出"><template #default="{ row }">{{ fmtAmount(row.expense) }}</template></el-table-column>
+        <el-table-column prop="closing_balance" label="期末余额"><template #default="{ row }">{{ fmtAmount(row.closing_balance) }}</template></el-table-column>
       </el-table>
     </el-card>
   </el-card>

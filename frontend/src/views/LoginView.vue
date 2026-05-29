@@ -7,7 +7,7 @@ import { useAuthStore } from '../stores/auth'
 const router = useRouter()
 const auth = useAuthStore()
 const loading = ref(false)
-const form = reactive({ username: 'admin', password: 'admin123456' })
+const form = reactive({ username: '', password: '' })
 
 async function submit() {
   loading.value = true

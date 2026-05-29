@@ -16,7 +16,7 @@ const menus = [
   { path: '/master/platforms', label: '平台管理', moduleKey: 'master.platforms' },
   { path: '/master/payment-methods', label: '账户管理', moduleKey: 'master.payment_methods' },
   { path: '/master/categories', label: '项目管理', moduleKey: 'master.categories' },
-  { path: '/master/entry-types', label: '录入类型管理', moduleKey: 'master.entry_types' },
+  { path: '/master/entry-types', label: '类型管理', moduleKey: 'master.entry_types' },
   { path: '/master/shifts', label: '班次管理', moduleKey: 'master.shifts' },
   { path: '/master/users', label: '用户管理', moduleKey: 'master.users' },
   { path: '/logs', label: '修改日志', moduleKey: 'logs' },

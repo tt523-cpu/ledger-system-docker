@@ -6,7 +6,7 @@ import http from '../../api/http'
 const items = ref([])
 const saving = ref(false)
 const editingId = ref(null)
-const form = reactive({ name: '', effect: 'expense', sort_order: 0, status: 'enabled' })
+const form = reactive({ name: '', effect: 'expense', requires_category: false, sort_order: 0, status: 'enabled' })
 const editForm = reactive({})
 
 const effectOptions = [
@@ -32,6 +32,7 @@ async function submit() {
     ElMessage.success('新增成功')
     form.name = ''
     form.effect = 'expense'
+    form.requires_category = false
     form.sort_order = 0
     form.status = 'enabled'
     await load()
@@ -45,6 +46,7 @@ function startEdit(row) {
   editForm.id = row.id
   editForm.name = row.name
   editForm.effect = row.effect
+  editForm.requires_category = !!row.requires_category
   editForm.sort_order = row.sort_order
   editForm.status = row.status
 }
@@ -68,7 +70,7 @@ onMounted(load)
 
 <template>
   <el-card>
-    <template #header>录入类型管理</template>
+    <template #header>类型管理</template>
     <el-form inline>
       <el-form-item label="名称">
         <el-input v-model="form.name" placeholder="例如：充值、兑奖、误上" style="width: 220px" />
@@ -77,6 +79,9 @@ onMounted(load)
         <el-select v-model="form.effect" style="width: 180px">
           <el-option v-for="e in effectOptions" :key="e.value" :value="e.value" :label="e.label" />
         </el-select>
+      </el-form-item>
+      <el-form-item label="需要项目">
+        <el-switch v-model="form.requires_category" active-text="是" inactive-text="否" />
       </el-form-item>
       <el-form-item label="排序">
         <el-input-number v-model="form.sort_order" :min="0" />
@@ -112,6 +117,12 @@ onMounted(load)
         <template #default="{ row }">
           <span v-if="editingId !== row.id">{{ row.sort_order }}</span>
           <el-input-number v-else v-model="editForm.sort_order" :min="0" />
+        </template>
+      </el-table-column>
+      <el-table-column label="需要项目" width="140">
+        <template #default="{ row }">
+          <span v-if="editingId !== row.id">{{ row.requires_category ? '是' : '否' }}</span>
+          <el-switch v-else v-model="editForm.requires_category" active-text="是" inactive-text="否" />
         </template>
       </el-table-column>
       <el-table-column label="状态" width="120">

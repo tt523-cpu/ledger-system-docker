@@ -61,6 +61,14 @@ body {
   width: 380px;
 }
 
+.table-scroll-wrap {
+  overflow-x: auto;
+}
+
+.page-actions {
+  margin-top: 12px;
+}
+
 @media (max-width: 900px) {
   .layout {
     flex-direction: column;
@@ -102,5 +110,27 @@ body {
 
   .el-table {
     font-size: 13px;
+  }
+
+  .table-scroll-wrap::after {
+    content: attr(data-hint);
+    display: block;
+    color: #6b7280;
+    font-size: 12px;
+    text-align: right;
+    margin-top: 4px;
+  }
+
+  .page-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    background: rgba(255, 255, 255, 0.96);
+    padding: 8px 0;
+    border-top: 1px solid #e5e7eb;
+  }
+
+  .page-actions .el-button {
+    margin-bottom: 6px;
   }
 }

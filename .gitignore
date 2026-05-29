@@ -19,6 +19,9 @@ backend/.env
 # Logs
 *.log
 
+# Runtime backup files
+backend/backups/
+
 # IDE
 .idea/
 .vscode/

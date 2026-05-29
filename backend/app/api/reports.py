@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from app.models.entities import (
 from app.models.entities import User
 from app.models.enums import UserRole
 from app.schemas.common import DailySummaryOut, MonthlySummaryOut
+from app.services.month_lock import assert_month_not_locked
 from app.services.summary import rebuild_daily_summary
 
 
@@ -232,6 +233,12 @@ def monthly_detail(
 
 @router.post("/monthly/rebuild")
 def rebuild_monthly(year: int, month: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles({UserRole.ADMIN.value}))):
+    check_date = date(year, month, 1)
+    try:
+        assert_month_not_locked(db, check_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+
     rows = db.execute(
         select(Transaction.bill_date, Transaction.shift_id, Transaction.platform_id)
         .where(

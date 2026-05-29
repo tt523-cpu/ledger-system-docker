@@ -31,10 +31,11 @@ const items = ref([])
 const platforms = ref([])
 const accounts = ref([])
 const categories = ref([])
+const entryTypes = ref([])
 const auth = useAuthStore()
 const editing = ref(false)
 const saving = ref(false)
-const editForm = reactive({ id: null, type: 'income', platform_id: null, amount: 0, remark: '' })
+const editForm = reactive({ id: null, type: 'income', type_label: '充值', category_id: null, platform_id: null, amount: 0, remark: '' })
 const viewportHeight = ref(window.innerHeight)
 
 const tableHeight = computed(() => {
@@ -89,14 +90,16 @@ function buildQueryParams() {
 }
 
 async function loadPlatforms() {
-  const [p, a, c] = await Promise.all([
+  const [p, a, c, et] = await Promise.all([
     http.get('/master/platforms'),
     http.get('/master/payment-methods'),
     http.get('/master/categories'),
+    http.get('/master/entry-types'),
   ])
   platforms.value = p.data
   accounts.value = a.data
   categories.value = c.data
+  entryTypes.value = (et.data || []).filter((x) => x.status === 'enabled')
 }
 
 function getPlatformName(id) {
@@ -114,6 +117,11 @@ function getCategoryName(id) {
   if (!id) return '-'
   const row = categories.value.find((c) => c.id === id)
   return row ? row.name : `项目#${id}`
+}
+
+function formatDateTime(v) {
+  if (!v) return '-'
+  return String(v).replace('T', ' ').slice(0, 19)
 }
 
 function onFilterChange() {
@@ -140,18 +148,38 @@ async function remove(id) {
 function startEdit(row) {
   editForm.id = row.id
   editForm.type = row.type
+  editForm.type_label = row.biz_type_label || (row.type === 'income' ? '充值' : row.type === 'expense' ? '支出' : '回冲')
+  editForm.category_id = row.category_id ?? null
   editForm.platform_id = row.platform_id
   editForm.amount = Number(row.amount)
   editForm.remark = row.remark || ''
   editing.value = true
 }
 
+function onEditTypeChange(typeId) {
+  const t = entryTypes.value.find((x) => x.id === typeId)
+  if (!t) return
+  editForm.type = t.effect
+  editForm.type_label = t.name
+  if (editForm.type_label !== '支出') {
+    editForm.category_id = null
+  }
+}
+
+function editTypeRequiresCategory() {
+  const t = entryTypes.value.find((x) => x.name === editForm.type_label && x.effect === editForm.type)
+  return !!t?.requires_category
+}
+
 async function saveEdit() {
   if (!editForm.id) return
   saving.value = true
   try {
+    const finalCategoryId = editTypeRequiresCategory() ? editForm.category_id : null
     await http.put(`/transactions/${editForm.id}`, {
       type: editForm.type,
+      biz_type_label: editForm.type_label,
+      category_id: finalCategoryId,
       platform_id: editForm.platform_id,
       amount: editForm.amount,
       remark: editForm.remark,
@@ -205,12 +233,16 @@ onBeforeUnmount(() => {
         </el-select>
       </el-form-item>
       <el-form-item label="备注关键词"><el-input v-model="query.keyword" /></el-form-item>
-      <el-button type="primary" @click="onFilterChange">查询</el-button>
+      <el-button type="primary" @click="onFilterChange" class="primary-query-btn">查询</el-button>
     </el-form>
 
+    <div class="table-scroll-wrap" data-hint="左右滑动查看更多列">
     <el-table :data="items" border :max-height="tableHeight">
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column prop="bill_date" label="日期" width="120" />
+      <el-table-column label="录入时间" width="180">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+      </el-table-column>
       <el-table-column label="平台" width="140">
         <template #default="{ row }">{{ getPlatformName(row.platform_id) }}</template>
       </el-table-column>
@@ -232,6 +264,7 @@ onBeforeUnmount(() => {
         </template>
       </el-table-column>
     </el-table>
+    </div>
     <el-pagination
       style="margin-top:12px"
       background
@@ -247,18 +280,25 @@ onBeforeUnmount(() => {
     <el-dialog v-model="editing" title="编辑流水" width="420px">
       <el-form label-width="80px">
         <el-form-item label="类型">
-          <el-select v-model="editForm.type" style="width: 220px">
-            <el-option value="income" label="充值" />
-            <el-option value="expense" label="支出" />
-            <el-option value="adjust" label="回冲" />
+          <el-select
+            :model-value="entryTypes.find((x) => x.name === editForm.type_label && x.effect === editForm.type)?.id"
+            style="width: 220px"
+            @change="onEditTypeChange"
+          >
+            <el-option v-for="t in entryTypes" :key="t.id" :label="t.name" :value="t.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="金额">
-          <el-input-number v-model="editForm.amount" :min="0" :precision="2" />
+          <el-input-number v-model="editForm.amount" :min="0" :precision="2" inputmode="decimal" />
         </el-form-item>
         <el-form-item label="平台">
           <el-select v-model="editForm.platform_id" style="width: 220px">
             <el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="项目">
+          <el-select v-model="editForm.category_id" :disabled="!editTypeRequiresCategory()" clearable filterable style="width: 220px">
+            <el-option v-for="c in categories" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="备注">

@@ -34,6 +34,7 @@ class CategoryCreate(BaseModel):
 class EntryTypeCreate(BaseModel):
     name: str
     effect: str
+    requires_category: bool = False
     sort_order: int = 0
     status: str = "enabled"
 

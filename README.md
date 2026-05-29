@@ -90,6 +90,45 @@ npm run build
 - 增加前端编辑弹窗、批量导入、移动端快捷数字键盘优化
 - 增加自动备份任务和月账锁定正式流程
 
+## 数据安全增强（已加入）
+
+### 1) 月账锁定（防止历史月份被误改）
+
+- 查询锁定列表：`GET /system/month-locks`
+- 锁定某月（管理员）：`POST /system/month-lock?year=2026&month=5`
+- 解锁某月（管理员）：`DELETE /system/month-lock?year=2026&month=5`
+
+锁定后，以下操作会返回 `423`：
+
+- `POST /transactions/batch`
+- `POST /transactions/offset`
+- `PUT /transactions/{id}`
+- `DELETE /transactions/{id}`
+- `POST /reports/monthly/rebuild`
+
+### 2) 自动备份脚本（可配计划任务）
+
+```bash
+cd backend
+python scripts/backup_runner.py --output ./backups --keep 30
+```
+
+- `--output`：备份目录
+- `--keep`：最多保留文件数（超出会自动删旧文件）
+
+### 3) Alembic 迁移脚手架（正式迁移起点）
+
+已加入 `backend/alembic.ini` 与 `backend/alembic/`。
+
+建议首上生产执行：
+
+```bash
+cd backend
+alembic -c alembic.ini stamp 20260529_0001
+```
+
+后续新增字段/表请统一走 Alembic revision + upgrade。
+
 ## Docker 正式部署
 
 ### 1) 准备生产环境变量

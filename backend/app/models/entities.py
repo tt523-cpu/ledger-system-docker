@@ -5,12 +5,13 @@ from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, St
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.core.time_utils import beijing_now
 from app.models.enums import ChannelKind, GenericStatus, PaymentMethodType, TransactionType, UserRole
 
 
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now, onupdate=beijing_now)
 
 
 class User(Base, TimestampMixin):
@@ -101,6 +102,14 @@ class EntryType(Base):
     status: Mapped[str] = mapped_column(String(20), default=GenericStatus.ENABLED.value)
 
 
+class EntryTypeSetting(Base):
+    __tablename__ = "entry_type_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_type_id: Mapped[int] = mapped_column(ForeignKey("entry_types.id"), unique=True, index=True)
+    requires_category: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class Transaction(Base, TimestampMixin):
     __tablename__ = "transactions"
 
@@ -139,8 +148,8 @@ class DailySummary(Base):
     total_other_in: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     net_profit: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     total_people: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now, onupdate=beijing_now)
 
 
 class AuditLog(Base):
@@ -153,7 +162,7 @@ class AuditLog(Base):
     before_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     after_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     ip: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
 
 
 class AccountSnapshot(Base):
@@ -173,8 +182,8 @@ class AccountSnapshot(Base):
     actual_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     difference: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     operator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now, onupdate=beijing_now)
 
 
 class HandoverSnapshot(Base):
@@ -187,7 +196,7 @@ class HandoverSnapshot(Base):
     total_expense: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     turnover: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     confirmed_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    confirmed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
 
 
 class HandoverPaymentSnapshot(Base):
@@ -200,3 +209,13 @@ class HandoverPaymentSnapshot(Base):
     recharge: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     payout: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     closing_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+
+
+class MonthLock(Base):
+    __tablename__ = "month_locks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lock_month: Mapped[str] = mapped_column(String(7), unique=True, index=True)  # YYYY-MM
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=True)
+    locked_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    locked_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)

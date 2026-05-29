@@ -9,12 +9,18 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import require_roles
-from app.models.entities import AccountSnapshot, AuditLog, Category, DailySummary, PaymentMethod, Transaction, User
+from app.models.entities import AccountSnapshot, AuditLog, Category, DailySummary, PaymentMethod, Platform, Shift, Transaction, User
 from app.models.enums import UserRole
 from app.services.summary import get_monthly_summary
 
 
 router = APIRouter(prefix="/exports", tags=["exports"])
+
+
+def apply_money_format(ws, cols: list[int], start_row: int = 2):
+    for r in range(start_row, ws.max_row + 1):
+        for c in cols:
+            ws.cell(row=r, column=c).number_format = "0.00"
 
 
 @router.get("/daily-excel")
@@ -36,16 +42,19 @@ def export_daily_excel(
     if platform_id:
         stmt = stmt.where(DailySummary.platform_id == platform_id)
     rows = db.execute(stmt.order_by(DailySummary.shift_id.asc(), DailySummary.platform_id.asc())).scalars().all()
+    platform_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
+    shift_map = {r[0]: r[1] for r in db.execute(select(Shift.id, Shift.name)).all()}
 
     for row in rows:
         ws.append([
             row.bill_date.isoformat(),
-            row.shift_id,
-            row.platform_id,
-            float(row.total_income),
-            float(row.total_expense),
-            float(row.net_profit),
+            shift_map.get(row.shift_id, row.shift_id),
+            platform_map.get(row.platform_id, f"平台#{row.platform_id}"),
+            float(row.total_income or 0),
+            float(row.total_expense or 0),
+            float(row.net_profit or 0),
         ])
+    apply_money_format(ws, [4, 5, 6])
 
     output = BytesIO()
     wb.save(output)
@@ -78,6 +87,8 @@ def export_report_query_excel(
     if platform_id:
         stmt = stmt.where(DailySummary.platform_id == platform_id)
     rows = db.execute(stmt.order_by(DailySummary.bill_date.asc(), DailySummary.shift_id.asc(), DailySummary.platform_id.asc())).scalars().all()
+    platform_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
+    shift_map = {r[0]: r[1] for r in db.execute(select(Shift.id, Shift.name)).all()}
 
     category_map = {c.id: c.name for c in db.execute(select(Category)).scalars().all()}
     row_expense_stmt = select(
@@ -119,17 +130,18 @@ def export_report_query_excel(
     for row in rows:
         key = (row.bill_date.isoformat(), int(row.shift_id), int(row.platform_id))
         expense_details = "，".join(expense_detail_map.get(key, []))
-        expense_cell = f"{float(row.total_expense)}"
+        expense_cell = f"{float(row.total_expense):.2f}"
         if expense_details:
-            expense_cell = f"{float(row.total_expense)}（{expense_details}）"
+            expense_cell = f"{float(row.total_expense):.2f}（{expense_details}）"
         ws.append([
             row.bill_date.isoformat(),
-            row.shift_id,
-            row.platform_id,
-            float(row.total_income),
+            shift_map.get(row.shift_id, row.shift_id),
+            platform_map.get(row.platform_id, f"平台#{row.platform_id}"),
+            float(row.total_income or 0),
             expense_cell,
-            float(row.net_profit),
+            float(row.net_profit or 0),
         ])
+    apply_money_format(ws, [4, 6])
 
     ws_bal = wb.create_sheet("账户余额")
     ws_bal.append(["账户", "通道类型", "期初余额", "充值", "支出", "期末余额"])
@@ -179,6 +191,7 @@ def export_report_query_excel(
         total_closing += closing
         ws_bal.append([pm.name, pm.channel_kind, opening, recharge, payout, closing])
     ws_bal.append(["总计", "-", total_opening, total_recharge, total_payout, total_closing])
+    apply_money_format(ws_bal, [3, 4, 5, 6])
 
     output = BytesIO()
     wb.save(output)
@@ -209,6 +222,7 @@ def export_handover_excel(
     ).all()
     for r in shift_rows:
         ws1.append([bill_date, r[0], float(r[1] or 0), float(r[2] or 0), float(r[3] or 0)])
+    apply_money_format(ws1, [3, 4, 5])
 
     ws2 = wb.create_sheet("支付方式余额")
     ws2.append(["支付方式", "期初余额", "充值", "支出", "期末余额"])
@@ -238,6 +252,7 @@ def export_handover_excel(
             elif tx_type == "expense":
                 payout += float(amount_sum or 0)
         ws2.append([pm.name, opening, recharge, payout, opening + recharge - payout])
+    apply_money_format(ws2, [2, 3, 4, 5])
 
     output = BytesIO()
     wb.save(output)
@@ -282,6 +297,7 @@ def export_excel(
                 tx.biz_group_no,
             ]
         )
+    apply_money_format(ws_tx, [6])
 
     ws_daily = wb.create_sheet("每日汇总")
     ws_daily.append(["日期", "班次", "平台", "收入", "支出", "净盈利"])
@@ -302,6 +318,7 @@ def export_excel(
                 float(row.net_profit),
             ]
         )
+    apply_money_format(ws_daily, [4, 5, 6])
 
     ws_bal = wb.create_sheet("账户余额")
     ws_bal.append(["日期", "班次", "账户", "理论余额", "实际余额", "差额"])
@@ -322,11 +339,13 @@ def export_excel(
                 float(row.difference),
             ]
         )
+    apply_money_format(ws_bal, [4, 5, 6])
 
     ws_month = wb.create_sheet("月度汇总")
     ws_month.append(["月份", "总收入", "总支出", "净盈利"])
     monthly = get_monthly_summary(db, year, month)
     ws_month.append([f"{year:04d}-{month:02d}", float(monthly["total_income"]), float(monthly["total_expense"]), float(monthly["net_profit"])])
+    apply_money_format(ws_month, [2, 3, 4])
 
     ws_platform = wb.create_sheet("平台汇总")
     ws_platform.append(["平台ID", "收入", "支出", "净盈利"])
@@ -347,6 +366,7 @@ def export_excel(
             plat_data[platform_id]["expense"] += float(amount or 0)
     for pid, val in plat_data.items():
         ws_platform.append([pid, val["income"], val["expense"], val["income"] - val["expense"]])
+    apply_money_format(ws_platform, [2, 3, 4])
 
     ws_project = wb.create_sheet("项目汇总")
     ws_project.append(["项目ID", "类型", "金额"])
@@ -359,6 +379,7 @@ def export_excel(
     ).all()
     for r in project_rows:
         ws_project.append([r[0], r[1], float(r[2] or 0)])
+    apply_money_format(ws_project, [3])
 
     ws_logs = wb.create_sheet("修改记录")
     ws_logs.append(["用户ID", "模块", "动作", "修改前", "修改后", "时间"])

@@ -24,6 +24,10 @@ const shifts = ref([])
 const platforms = ref([])
 const selectedShiftId = ref('')
 
+function fmtAmount(v) {
+  return Number(v || 0).toFixed(2)
+}
+
 const shiftNameMap = computed(() => {
   const m = new Map()
   for (const s of shifts.value) m.set(s.id, s.name)
@@ -214,10 +218,12 @@ async function confirmHandover() {
           <el-option v-for="s in shifts" :key="s.id" :value="String(s.id)" :label="s.name" />
         </el-select>
       </el-form-item>
-      <el-button type="primary" :loading="loading" @click="search">查询</el-button>
-      <el-button @click="exportExcel">导出Excel</el-button>
-      <el-button v-if="mode==='day'" type="success" @click="confirmHandover">确认交班</el-button>
-      <el-button v-if="mode==='day'" @click="exportHandover">导出交班报表</el-button>
+      <el-form-item class="page-actions">
+        <el-button type="primary" :loading="loading" @click="search">查询</el-button>
+        <el-button @click="exportExcel">导出Excel</el-button>
+        <el-button v-if="mode==='day'" type="success" @click="confirmHandover">确认交班</el-button>
+        <el-button v-if="mode==='day'" @click="exportHandover">导出交班报表</el-button>
+      </el-form-item>
     </el-form>
 
     <el-alert
@@ -229,21 +235,22 @@ async function confirmHandover() {
     />
 
     <el-row :gutter="10" style="margin: 8px 0 12px">
-      <el-col :span="8"><el-card>充值合计：{{ summary.income }}</el-card></el-col>
-      <el-col :span="8"><el-card>支出合计：{{ summary.expense }}</el-card></el-col>
-      <el-col :span="8"><el-card>净营业：{{ summary.net }}</el-card></el-col>
+      <el-col :span="8"><el-card>充值合计：{{ fmtAmount(summary.income) }}</el-card></el-col>
+      <el-col :span="8"><el-card>支出合计：{{ fmtAmount(summary.expense) }}</el-card></el-col>
+      <el-col :span="8"><el-card>净营业：{{ fmtAmount(summary.net) }}</el-card></el-col>
     </el-row>
 
     <el-card style="margin-bottom: 12px">
       <template #header>按平台汇总</template>
       <el-table :data="platformSummaries" border>
         <el-table-column prop="platform_name" label="平台" width="180" />
-        <el-table-column prop="income" label="充值" />
-        <el-table-column prop="expense" label="支出" />
-        <el-table-column prop="net" label="净营业" />
+        <el-table-column prop="income" label="充值"><template #default="{ row }">{{ fmtAmount(row.income) }}</template></el-table-column>
+        <el-table-column prop="expense" label="支出"><template #default="{ row }">{{ fmtAmount(row.expense) }}</template></el-table-column>
+        <el-table-column prop="net" label="净营业"><template #default="{ row }">{{ fmtAmount(row.net) }}</template></el-table-column>
       </el-table>
     </el-card>
 
+    <div class="table-scroll-wrap" data-hint="左右滑动查看更多列">
     <el-table :data="rows" border>
       <el-table-column prop="bill_date" label="日期" width="130" />
       <el-table-column label="班次" width="120">
@@ -252,15 +259,16 @@ async function confirmHandover() {
       <el-table-column label="平台" width="160">
         <template #default="{ row }">{{ platformNameMap.get(row.platform_id) || `平台#${row.platform_id}` }}</template>
       </el-table-column>
-      <el-table-column prop="total_income" label="充值" />
+      <el-table-column prop="total_income" label="充值"><template #default="{ row }">{{ fmtAmount(row.total_income) }}</template></el-table-column>
       <el-table-column label="支出" min-width="320">
         <template #default="{ row }">
-          <span>{{ row.total_expense }}</span>
+          <span>{{ fmtAmount(row.total_expense) }}</span>
           <span v-if="Number(row.total_expense || 0) > 0">（{{ row.expense_display || '未关联项目' }}）</span>
         </template>
       </el-table-column>
-      <el-table-column prop="net_profit" label="净营业" />
+      <el-table-column prop="net_profit" label="净营业"><template #default="{ row }">{{ fmtAmount(row.net_profit) }}</template></el-table-column>
     </el-table>
+    </div>
 
     <el-card v-if="mode==='day'" style="margin-top: 12px">
       <template #header>账户余额（当日）</template>

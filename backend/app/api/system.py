@@ -1,5 +1,7 @@
 import json
 from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -8,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import require_roles
+from app.core.time_utils import beijing_now
 from app.models.entities import (
     AccountSnapshot,
     AuditLog,
@@ -15,6 +18,7 @@ from app.models.entities import (
     DailySummary,
     HandoverPaymentSnapshot,
     HandoverSnapshot,
+    MonthLock,
     PaymentMethod,
     Platform,
     Shift,
@@ -22,9 +26,11 @@ from app.models.entities import (
     User,
 )
 from app.models.enums import UserRole
+from app.services.month_lock import month_key
 
 
 router = APIRouter(prefix="/system", tags=["system"])
+BACKUP_DIR = Path("backups")
 
 
 BACKUP_TABLES = [
@@ -38,8 +44,59 @@ BACKUP_TABLES = [
     ("account_snapshots", AccountSnapshot),
     ("handover_snapshots", HandoverSnapshot),
     ("handover_payment_snapshots", HandoverPaymentSnapshot),
+    ("month_locks", MonthLock),
     ("audit_logs", AuditLog),
 ]
+
+
+@router.get("/month-locks")
+def list_month_locks(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+):
+    return db.execute(select(MonthLock).order_by(MonthLock.lock_month.desc())).scalars().all()
+
+
+@router.post("/month-lock")
+def lock_month(
+    year: int,
+    month: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+):
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="invalid month")
+    key = month_key(datetime(year, month, 1).date())
+    row = db.execute(select(MonthLock).where(MonthLock.lock_month == key)).scalar_one_or_none()
+    if row is None:
+        row = MonthLock(lock_month=key, is_locked=True, locked_by=current_user.id)
+        db.add(row)
+    else:
+        row.is_locked = True
+        row.locked_by = current_user.id
+        row.locked_at = beijing_now()
+    db.commit()
+    return {"ok": True, "lock_month": key}
+
+
+@router.delete("/month-lock")
+def unlock_month(
+    year: int,
+    month: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+):
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="invalid month")
+    key = month_key(datetime(year, month, 1).date())
+    row = db.execute(select(MonthLock).where(MonthLock.lock_month == key)).scalar_one_or_none()
+    if row is None:
+        return {"ok": True, "lock_month": key}
+    row.is_locked = False
+    row.locked_by = current_user.id
+    row.locked_at = beijing_now()
+    db.commit()
+    return {"ok": True, "lock_month": key}
 
 
 def _serialize_rows(rows, model):
@@ -51,9 +108,32 @@ def _serialize_rows(rows, model):
             val = getattr(row, c)
             if hasattr(val, "isoformat"):
                 val = val.isoformat()
+            elif isinstance(val, Decimal):
+                val = float(val)
             data[c] = val
         result.append(data)
     return result
+
+
+def _build_backup_payload(db: Session, exported_by: str):
+    payload = {
+        "meta": {"exported_at": beijing_now().isoformat(), "exported_by": exported_by},
+        "tables": {},
+    }
+    for table_name, model in BACKUP_TABLES:
+        rows = db.execute(select(model)).scalars().all()
+        payload["tables"][table_name] = _serialize_rows(rows, model)
+    return payload
+
+
+def _write_server_backup(db: Session, exported_by: str, reason: str):
+    payload = _build_backup_payload(db, exported_by)
+    payload["meta"]["reason"] = reason
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"accounting-backup-{beijing_now().strftime('%Y%m%d-%H%M%S')}.json"
+    path = BACKUP_DIR / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return filename
 
 
 @router.get("/logs")
@@ -126,21 +206,85 @@ def export_backup(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
 ):
-    payload = {
-        "meta": {"exported_at": datetime.utcnow().isoformat(), "exported_by": current_user.username},
-        "tables": {},
-    }
-    for table_name, model in BACKUP_TABLES:
-        rows = db.execute(select(model)).scalars().all()
-        payload["tables"][table_name] = _serialize_rows(rows, model)
+    payload = _build_backup_payload(db, current_user.username)
 
     content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    filename = f"accounting-backup-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
+    filename = f"accounting-backup-{beijing_now().strftime('%Y%m%d-%H%M%S')}.json"
     return StreamingResponse(
         iter([content]),
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+@router.post("/backup/create")
+def create_server_backup(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+):
+    filename = _write_server_backup(db, current_user.username, "manual_backup")
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            module="system",
+            action="create_backup",
+            before_data=None,
+            after_data=f"file={filename}",
+        )
+    )
+    db.commit()
+    return {"ok": True, "backup_file": filename}
+
+
+@router.get("/backup/files")
+def list_backup_files(
+    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+):
+    if not BACKUP_DIR.exists():
+        return []
+    files = []
+    for p in sorted(BACKUP_DIR.glob("accounting-backup-*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+        st = p.stat()
+        files.append(
+            {
+                "filename": p.name,
+                "size": st.st_size,
+                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+            }
+        )
+    return files
+
+
+@router.get("/backup/files/{filename}")
+def download_backup_file(
+    filename: str,
+    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+):
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    path = BACKUP_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="backup file not found")
+    content = path.read_bytes()
+    return StreamingResponse(
+        iter([content]),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.delete("/backup/files/{filename}")
+def delete_backup_file(
+    filename: str,
+    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+):
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    path = BACKUP_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="backup file not found")
+    path.unlink()
+    return {"ok": True, "filename": filename}
 
 
 @router.post("/backup/restore")
@@ -183,7 +327,8 @@ def delete_data_before_date(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
 ):
-    now = datetime.utcnow()
+    backup_filename = _write_server_backup(db, current_user.username, f"delete_before_date:{before_date}")
+    now = beijing_now().replace(tzinfo=None)
     tx_rows = db.execute(select(Transaction).where(Transaction.bill_date < before_date, Transaction.deleted_at.is_(None))).scalars().all()
     for tx in tx_rows:
         tx.deleted_at = now
@@ -206,7 +351,7 @@ def delete_data_before_date(
         )
     )
     db.commit()
-    return {"ok": True, "deleted_transactions": len(tx_rows)}
+    return {"ok": True, "deleted_transactions": len(tx_rows), "backup_file": backup_filename}
 
 
 @router.post("/data/delete-by-date")
@@ -215,7 +360,8 @@ def delete_data_by_date(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
 ):
-    now = datetime.utcnow()
+    backup_filename = _write_server_backup(db, current_user.username, f"delete_by_date:{bill_date}")
+    now = beijing_now().replace(tzinfo=None)
     tx_rows = db.execute(select(Transaction).where(Transaction.bill_date == bill_date, Transaction.deleted_at.is_(None))).scalars().all()
     for tx in tx_rows:
         tx.deleted_at = now
@@ -238,4 +384,4 @@ def delete_data_by_date(
         )
     )
     db.commit()
-    return {"ok": True, "deleted_transactions": len(tx_rows)}
+    return {"ok": True, "deleted_transactions": len(tx_rows), "backup_file": backup_filename}

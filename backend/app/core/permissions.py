@@ -16,7 +16,7 @@ MODULES = [
     {"key": "master.platforms", "label": "平台管理"},
     {"key": "master.payment_methods", "label": "账户管理"},
     {"key": "master.categories", "label": "项目管理"},
-    {"key": "master.entry_types", "label": "录入类型管理"},
+    {"key": "master.entry_types", "label": "类型管理"},
     {"key": "master.shifts", "label": "班次管理"},
     {"key": "master.users", "label": "用户管理"},
     {"key": "logs", "label": "修改日志"},

@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../../api/http'
 
 const form = reactive({ username: '', password: '', role: 'bookkeeper', status: 'enabled', platform_id: null })
@@ -45,6 +45,19 @@ async function removeUser(id) {
   await load()
 }
 
+async function resetPassword(row) {
+  const ret = await ElMessageBox.prompt(`请输入 ${row.username} 的新密码`, '重置密码', {
+    confirmButtonText: '确认',
+    cancelButtonText: '取消',
+    inputType: 'password',
+    inputPattern: /^.{6,}$/,
+    inputErrorMessage: '密码至少6位',
+  }).catch(() => null)
+  if (!ret) return
+  await http.put(`/master/users/${row.id}/password`, null, { params: { new_password: ret.value } })
+  ElMessage.success(`已重置 ${row.username} 密码`)
+}
+
 onMounted(load)
 </script>
 
@@ -54,7 +67,13 @@ onMounted(load)
     <el-form inline>
       <el-form-item label="用户名"><el-input v-model="form.username" /></el-form-item>
       <el-form-item label="密码"><el-input v-model="form.password" type="password" /></el-form-item>
-      <el-form-item label="角色"><el-select v-model="form.role"><el-option value="admin" label="管理员" /><el-option value="bookkeeper" label="记账员" /><el-option value="viewer" label="查看人员" /></el-select></el-form-item>
+      <el-form-item label="角色">
+        <el-select v-model="form.role" style="width: 140px">
+          <el-option value="admin" label="管理员" />
+          <el-option value="bookkeeper" label="记账员" />
+          <el-option value="viewer" label="查看人员" />
+        </el-select>
+      </el-form-item>
       <el-form-item label="所属平台">
         <el-select v-model="form.platform_id" clearable style="width: 180px">
           <el-option v-for="p in platforms" :key="p.id" :value="p.id" :label="p.name" />
@@ -89,9 +108,10 @@ onMounted(load)
           </el-select>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="160">
+      <el-table-column label="操作" width="230">
         <template #default="{ row }">
           <el-button link type="primary" @click="updateUser(row)">保存</el-button>
+          <el-button link type="warning" @click="resetPassword(row)">重置密码</el-button>
           <el-button link type="danger" @click="removeUser(row.id)">删除</el-button>
         </template>
       </el-table-column>
