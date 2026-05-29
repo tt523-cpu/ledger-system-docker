@@ -228,9 +228,18 @@ def update_transaction(
     }
     updatable = ADMIN_UPDATABLE_FIELDS if current_user.role == UserRole.ADMIN.value else BOOKKEEPER_UPDATABLE_FIELDS
 
-    blocked = [k for k in payload.keys() if k not in updatable]
-    if blocked:
-        raise HTTPException(status_code=403, detail=f"no permission to edit fields: {', '.join(blocked)}")
+    blocked_changed = []
+    for k, v in payload.items():
+        if k in updatable:
+            continue
+        existing_val = getattr(tx, k, None)
+        cmp_val = v
+        if k == "type":
+            cmp_val = normalize_tx_type(v)
+        if existing_val != cmp_val:
+            blocked_changed.append(k)
+    if blocked_changed:
+        raise HTTPException(status_code=403, detail=f"no permission to edit fields: {', '.join(blocked_changed)}")
 
     for k, v in payload.items():
         if k in updatable:

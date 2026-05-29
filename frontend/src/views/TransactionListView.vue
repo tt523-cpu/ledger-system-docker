@@ -189,6 +189,8 @@ async function saveEdit() {
     ElMessage.success('修改成功')
     editing.value = false
     await load()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '保存失败')
   } finally {
     saving.value = false
   }
