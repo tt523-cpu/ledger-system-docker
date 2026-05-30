@@ -394,6 +394,7 @@ async def restore_tenant_backup(
     raw = await file.read()
     data = json.loads(raw.decode("utf-8"))
     tables = data.get("tables", {})
+    restored_counts: dict[str, int] = {}
 
     platform_rows = db.execute(select(TenantPlatformAccess).where(TenantPlatformAccess.tenant_id == tenant_id)).scalars().all()
     platform_ids = [r.platform_id for r in platform_rows]
@@ -422,18 +423,21 @@ async def restore_tenant_backup(
         rows = tables.get(table_name, [])
         if rows:
             db.execute(model.__table__.insert().prefix_with("OR REPLACE"), rows)
+        restored_counts[table_name] = len(rows)
 
     user_tenant_rows = tables.get("user_tenant_access", [])
     for row in user_tenant_rows:
         row["tenant_id"] = tenant_id
     if user_tenant_rows:
         db.execute(UserTenantAccess.__table__.insert().prefix_with("OR REPLACE"), user_tenant_rows)
+    restored_counts["user_tenant_access"] = len(user_tenant_rows)
 
     tenant_platform_rows = tables.get("tenant_platform_access", [])
     for row in tenant_platform_rows:
         row["tenant_id"] = tenant_id
     if tenant_platform_rows:
         db.execute(TenantPlatformAccess.__table__.insert().prefix_with("OR REPLACE"), tenant_platform_rows)
+    restored_counts["tenant_platform_access"] = len(tenant_platform_rows)
 
     db.add(
         AuditLog(
@@ -445,7 +449,13 @@ async def restore_tenant_backup(
         )
     )
     db.commit()
-    return {"ok": True, "tenant_id": tenant_id, "restored_file": file.filename}
+    return {
+        "ok": True,
+        "tenant_id": tenant_id,
+        "restored_file": file.filename,
+        "restored_counts": restored_counts,
+        "total_rows": int(sum(restored_counts.values())),
+    }
 
 
 @router.get("/health/tenant-consistency")
@@ -561,6 +571,7 @@ async def restore_backup(
     raw = await file.read()
     data = json.loads(raw.decode("utf-8"))
     tables = data.get("tables", {})
+    restored_counts: dict[str, int] = {}
 
     for _, model in reversed(BACKUP_TABLES):
         db.execute(model.__table__.delete())
@@ -570,6 +581,7 @@ async def restore_backup(
         rows = tables.get(table_name, [])
         if rows:
             db.execute(model.__table__.insert(), rows)
+        restored_counts[table_name] = len(rows)
 
     db.add(
         AuditLog(
@@ -581,7 +593,12 @@ async def restore_backup(
         )
     )
     db.commit()
-    return {"ok": True, "restored_file": file.filename}
+    return {
+        "ok": True,
+        "restored_file": file.filename,
+        "restored_counts": restored_counts,
+        "total_rows": int(sum(restored_counts.values())),
+    }
 
 
 @router.post("/data/delete-before")

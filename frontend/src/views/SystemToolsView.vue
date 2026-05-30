@@ -16,7 +16,12 @@ const form = reactive({
 const restoring = ref(false)
 const monthLocks = ref([])
 const backupFiles = ref([])
-const tenantHealth = ref(null)
+
+function formatRestoreResult(data) {
+  const total = Number(data?.total_rows || 0)
+  const fileName = data?.restored_file || '未知文件'
+  return `恢复成功：${fileName}，写入 ${total} 条记录`
+}
 
 async function loadMonthLocks() {
   const { data } = await http.get('/system/month-locks')
@@ -64,8 +69,8 @@ async function restoreBackup(file) {
   try {
     const fd = new FormData()
     fd.append('file', file.raw)
-    await http.post('/system/backup/restore', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-    ElMessage.success('恢复完成')
+    const { data } = await http.post('/system/backup/restore', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+    ElMessage.success(formatRestoreResult(data))
     await loadBackupFiles()
   } finally {
     restoring.value = false
@@ -84,11 +89,11 @@ async function restoreTenantBackup(file) {
   try {
     const fd = new FormData()
     fd.append('file', file.raw)
-    await http.post('/system/backup/tenant-restore', fd, {
+    const { data } = await http.post('/system/backup/tenant-restore', fd, {
       params: { tenant_id: auth.tenantId },
       headers: { 'Content-Type': 'multipart/form-data' },
     })
-    ElMessage.success('当前用户数据恢复完成')
+    ElMessage.success(formatRestoreResult(data))
   } finally {
     restoring.value = false
   }
@@ -152,22 +157,15 @@ async function deleteBackupFile(filename) {
   await loadBackupFiles()
 }
 
-async function loadTenantHealth() {
-  if (!isSuper) return
-  const { data } = await http.get('/system/health/tenant-consistency')
-  tenantHealth.value = data
-}
-
 loadMonthLocks()
 loadBackupFiles()
-if (isSuper) loadTenantHealth()
 </script>
 
 <template>
   <el-card>
     <template #header>系统工具</template>
 
-    <el-alert :title="isSuper ? '以下操作请仅管理员使用' : '当前页面操作仅作用于当前用户的数据范围'" type="warning" show-icon style="margin-bottom: 12px" />
+    <el-alert :title="isSuper ? '以下操作请仅管理员使用（恢复成功后无需重启Docker）' : '当前页面操作仅作用于当前用户的数据范围（恢复成功后无需重启Docker）'" type="warning" show-icon style="margin-bottom: 12px" />
 
     <el-space wrap>
       <el-button type="success" @click="createServerBackup">手动备份到服务器</el-button>
@@ -192,55 +190,46 @@ if (isSuper) loadTenantHealth()
       </el-table-column>
     </el-table>
 
-    <el-divider v-if="isSuper" />
+    <template v-if="!isSuper">
+      <el-divider />
 
-    <el-card v-if="isSuper" shadow="never">
-      <template #header>租户一致性检查</template>
-      <el-space>
-        <el-button type="primary" @click="loadTenantHealth">刷新检查</el-button>
-        <span v-if="tenantHealth">租户{{ tenantHealth.tenant_count }}，异常用户绑定{{ tenantHealth.invalid_user_access }}，异常平台绑定{{ tenantHealth.invalid_platform_access }}，未绑定租户用户{{ tenantHealth.users_without_tenant }}</span>
-      </el-space>
-      <el-alert title="默认租户下线迁移脚本：backend/scripts/migrate_remove_default_tenant_template.py" :type="tenantHealth?.ok ? 'success' : 'warning'" show-icon style="margin-top: 10px" />
-    </el-card>
+      <el-form inline>
+        <el-form-item label="删除某日前数据">
+          <el-date-picker v-model="form.before_date" value-format="YYYY-MM-DD" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="danger" @click="deleteBefore">执行删除</el-button>
+        </el-form-item>
+      </el-form>
 
-    <el-divider />
+      <el-form inline>
+        <el-form-item label="删除某日数据">
+          <el-date-picker v-model="form.bill_date" value-format="YYYY-MM-DD" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="danger" @click="deleteByDate">执行删除</el-button>
+        </el-form-item>
+      </el-form>
 
-    <el-form inline>
-      <el-form-item label="删除某日前数据">
-        <el-date-picker v-model="form.before_date" value-format="YYYY-MM-DD" />
-      </el-form-item>
-      <el-form-item>
-        <el-button type="danger" @click="deleteBefore">执行删除</el-button>
-      </el-form-item>
-    </el-form>
+      <el-divider />
 
-    <el-form inline>
-      <el-form-item label="删除某日数据">
-        <el-date-picker v-model="form.bill_date" value-format="YYYY-MM-DD" />
-      </el-form-item>
-      <el-form-item>
-        <el-button type="danger" @click="deleteByDate">执行删除</el-button>
-      </el-form-item>
-    </el-form>
+      <el-form inline>
+        <el-form-item label="锁账年份"><el-input-number v-model="form.lock_year" :min="2020" /></el-form-item>
+        <el-form-item label="锁账月份"><el-input-number v-model="form.lock_month" :min="1" :max="12" /></el-form-item>
+        <el-form-item>
+          <el-button type="warning" @click="lockMonth">锁定该月</el-button>
+          <el-button @click="unlockMonth">解锁该月</el-button>
+        </el-form-item>
+      </el-form>
 
-    <el-divider />
-
-    <el-form inline>
-      <el-form-item label="锁账年份"><el-input-number v-model="form.lock_year" :min="2020" /></el-form-item>
-      <el-form-item label="锁账月份"><el-input-number v-model="form.lock_month" :min="1" :max="12" /></el-form-item>
-      <el-form-item>
-        <el-button type="warning" @click="lockMonth">锁定该月</el-button>
-        <el-button @click="unlockMonth">解锁该月</el-button>
-      </el-form-item>
-    </el-form>
-
-    <el-table :data="monthLocks" border style="margin-top: 12px">
-      <el-table-column prop="lock_month" label="月份" width="120" />
-      <el-table-column label="状态" width="120">
-        <template #default="{ row }">{{ row.is_locked ? '已锁定' : '未锁定' }}</template>
-      </el-table-column>
-      <el-table-column prop="locked_by" label="操作人ID" width="120" />
-      <el-table-column prop="locked_at" label="操作时间" />
-    </el-table>
+      <el-table :data="monthLocks" border style="margin-top: 12px">
+        <el-table-column prop="lock_month" label="月份" width="120" />
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }">{{ row.is_locked ? '已锁定' : '未锁定' }}</template>
+        </el-table-column>
+        <el-table-column prop="locked_by" label="操作人ID" width="120" />
+        <el-table-column prop="locked_at" label="操作时间" />
+      </el-table>
+    </template>
   </el-card>
 </template>
