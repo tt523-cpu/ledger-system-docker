@@ -25,6 +25,14 @@ class User(Base, TimestampMixin):
     platform_id: Mapped[int | None] = mapped_column(ForeignKey("platforms.id"), nullable=True, index=True)
 
 
+class UserPlatformAccess(Base):
+    __tablename__ = "user_platform_access"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    platform_id: Mapped[int] = mapped_column(ForeignKey("platforms.id"), index=True)
+
+
 class RoleModulePermission(Base):
     __tablename__ = "role_module_permissions"
 

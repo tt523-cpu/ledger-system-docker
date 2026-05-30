@@ -10,6 +10,7 @@ const categories = ref([])
 const accounts = ref([])
 const entryTypes = ref([])
 const auth = useAuthStore()
+const selectablePlatforms = ref([])
 
 const form = reactive({
   bill_date: new Date().toISOString().slice(0, 10),
@@ -48,6 +49,10 @@ async function loadMaster() {
   categories.value = c.data
   accounts.value = pm.data
   entryTypes.value = et.data.filter((x) => x.status === 'enabled')
+  const allowedIds = new Set((auth.platformIds || []).map((x) => Number(x)))
+  selectablePlatforms.value = auth.role === 'bookkeeper' && allowedIds.size > 0
+    ? platforms.value.filter((x) => allowedIds.has(Number(x.id)))
+    : platforms.value
   if (entryTypes.value.length > 0 && form.lines.length > 0 && !form.lines[0].type_label) {
     form.lines[0].type_label = entryTypes.value[0].name
     form.lines[0].type = entryTypes.value[0].effect
@@ -75,10 +80,8 @@ async function loadMaster() {
     form.shift_id = matched ? matched.id : shifts.value[0].id
   }
 
-  if (auth.role === 'bookkeeper' && auth.platformId) {
-    form.platform_id = auth.platformId
-  } else if (!form.platform_id && platforms.value.length > 0) {
-    form.platform_id = platforms.value[0].id
+  if (!form.platform_id && selectablePlatforms.value.length > 0) {
+    form.platform_id = selectablePlatforms.value[0].id
   }
 }
 
@@ -124,7 +127,7 @@ onMounted(loadMaster)
     <el-form inline>
       <el-form-item label="日期"><el-date-picker v-model="form.bill_date" value-format="YYYY-MM-DD" /></el-form-item>
       <el-form-item label="班次"><el-select v-model="form.shift_id" style="width: 140px"><el-option v-for="i in shifts" :key="i.id" :value="i.id" :label="i.name" /></el-select></el-form-item>
-      <el-form-item v-if="auth.role !== 'bookkeeper'" label="平台"><el-select v-model="form.platform_id" style="width: 180px"><el-option v-for="i in platforms" :key="i.id" :value="i.id" :label="i.name" /></el-select></el-form-item>
+      <el-form-item label="平台"><el-select v-model="form.platform_id" style="width: 180px"><el-option v-for="i in selectablePlatforms" :key="i.id" :value="i.id" :label="i.name" /></el-select></el-form-item>
     </el-form>
 
     <div class="table-scroll-wrap" data-hint="左右滑动查看更多列">

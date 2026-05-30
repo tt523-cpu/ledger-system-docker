@@ -43,6 +43,26 @@ const tableHeight = computed(() => {
   return Math.max(420, viewportHeight.value - 330)
 })
 
+const totalRecharge = computed(() => {
+  return items.value.reduce((sum, row) => {
+    const label = row.biz_type_label || typeLabelMap[row.type] || ''
+    if (label !== '充值') return sum
+    return sum + Number(row.amount || 0)
+  }, 0)
+})
+
+const totalRedeem = computed(() => {
+  return items.value.reduce((sum, row) => {
+    const label = row.biz_type_label || typeLabelMap[row.type] || ''
+    if (label !== '兑奖') return sum
+    return sum + Number(row.amount || 0)
+  }, 0)
+})
+
+function formatMoney(v) {
+  return Number(v || 0).toFixed(2)
+}
+
 function onResize() {
   viewportHeight.value = window.innerHeight
 }
@@ -238,6 +258,10 @@ onBeforeUnmount(() => {
       </el-form-item>
       <el-form-item label="备注关键词"><el-input v-model="query.keyword" /></el-form-item>
       <el-button type="primary" @click="onFilterChange" class="primary-query-btn">查询</el-button>
+      <div class="totals-bar">
+        <span>总充值（元）：{{ formatMoney(totalRecharge) }}</span>
+        <span>总兑奖（元）：{{ formatMoney(totalRedeem) }}</span>
+      </div>
     </el-form>
 
     <div class="table-scroll-wrap" data-hint="左右滑动查看更多列">
@@ -321,3 +345,13 @@ onBeforeUnmount(() => {
     </el-dialog>
   </el-card>
 </template>
+
+<style scoped>
+.totals-bar {
+  display: inline-flex;
+  gap: 20px;
+  margin-left: 12px;
+  color: #606266;
+  font-size: 14px;
+}
+</style>

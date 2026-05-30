@@ -8,9 +8,8 @@ from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_roles
+from app.core.deps import require_module
 from app.models.entities import AccountSnapshot, AuditLog, Category, DailySummary, PaymentMethod, Platform, Shift, Transaction, User
-from app.models.enums import UserRole
 from app.services.summary import get_monthly_summary
 
 
@@ -29,7 +28,7 @@ def export_daily_excel(
     shift_id: int | None = None,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.VIEWER.value, UserRole.BOOKKEEPER.value})),
+    _: User = Depends(require_module("reports.query")),
 ):
     wb = Workbook()
     ws = wb.active
@@ -74,7 +73,7 @@ def export_report_query_excel(
     shift_id: int | None = None,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.VIEWER.value, UserRole.BOOKKEEPER.value})),
+    _: User = Depends(require_module("reports.query")),
 ):
     wb = Workbook()
     ws = wb.active
@@ -208,7 +207,7 @@ def export_report_query_excel(
 def export_handover_excel(
     bill_date: str,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.VIEWER.value, UserRole.BOOKKEEPER.value})),
+    _: User = Depends(require_module("reports.query")),
 ):
     wb = Workbook()
     ws1 = wb.active
@@ -270,7 +269,7 @@ def export_excel(
     year: int,
     month: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.VIEWER.value, UserRole.BOOKKEEPER.value})),
+    _: User = Depends(require_module("reports.monthly")),
 ):
     wb = Workbook()
 

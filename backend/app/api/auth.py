@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, get_user_platform_ids
 from app.core.permissions import MODULES, enabled_modules_for_role
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.models.entities import User
@@ -40,17 +40,20 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="User disabled")
 
     token = create_access_token(subject=user.username, role=user.role)
-    return TokenOut(access_token=token, role=user.role, platform_id=user.platform_id)
+    platform_ids = get_user_platform_ids(db, user)
+    return TokenOut(access_token=token, role=user.role, platform_id=(platform_ids[0] if platform_ids else None), platform_ids=platform_ids)
 
 
 @router.get("/me")
 def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     module_keys = enabled_modules_for_role(db, current_user.role)
+    platform_ids = get_user_platform_ids(db, current_user)
     return {
         "id": current_user.id,
         "username": current_user.username,
         "role": current_user.role,
-        "platform_id": current_user.platform_id,
+        "platform_id": platform_ids[0] if platform_ids else None,
+        "platform_ids": platform_ids,
         "module_keys": module_keys,
         "modules": MODULES,
     }

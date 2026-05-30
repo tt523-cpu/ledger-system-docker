@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_roles
+from app.core.deps import get_user_platform_ids, require_roles
 from app.models.entities import AuditLog, Category, EntryType, EntryTypeSetting, Transaction, User
 from app.models.enums import TransactionType, UserRole
 from app.schemas.common import BatchTransactionCreate, OffsetTransactionCreate
@@ -88,9 +88,15 @@ def create_batch_transactions(
         raise HTTPException(status_code=423, detail=str(exc)) from exc
 
     if current_user.role == UserRole.BOOKKEEPER.value:
-        if current_user.platform_id is None:
+        platform_ids = get_user_platform_ids(db, current_user)
+        if not platform_ids:
             raise HTTPException(status_code=400, detail="bookkeeper has no platform binding")
-        effective_platform_id = current_user.platform_id
+        if payload.platform_id is None:
+            effective_platform_id = platform_ids[0]
+        else:
+            if payload.platform_id not in platform_ids:
+                raise HTTPException(status_code=403, detail="no permission for selected platform")
+            effective_platform_id = payload.platform_id
     else:
         if payload.platform_id is None:
             raise HTTPException(status_code=400, detail="platform_id is required")
@@ -163,7 +169,7 @@ def list_transactions(
     category_id: int | None = None,
     keyword: str | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
 ):
     stmt = select(Transaction).where(Transaction.deleted_at.is_(None))
     count_stmt = select(func.count(Transaction.id)).where(Transaction.deleted_at.is_(None))
@@ -183,6 +189,11 @@ def list_transactions(
     if platform_id:
         stmt = stmt.where(Transaction.platform_id == platform_id)
         count_stmt = count_stmt.where(Transaction.platform_id == platform_id)
+    if current_user.role in {UserRole.BOOKKEEPER.value, UserRole.VIEWER.value}:
+        platform_ids = get_user_platform_ids(db, current_user)
+        if platform_ids:
+            stmt = stmt.where(Transaction.platform_id.in_(platform_ids))
+            count_stmt = count_stmt.where(Transaction.platform_id.in_(platform_ids))
     if tx_type:
         stmt = stmt.where(Transaction.type == tx_type)
         count_stmt = count_stmt.where(Transaction.type == tx_type)
@@ -212,7 +223,8 @@ def update_transaction(
         raise HTTPException(status_code=404, detail="transaction not found")
 
     if current_user.role == UserRole.BOOKKEEPER.value:
-        if current_user.platform_id is None or tx.platform_id != current_user.platform_id:
+        platform_ids = get_user_platform_ids(db, current_user)
+        if tx.platform_id not in platform_ids:
             raise HTTPException(status_code=403, detail="bookkeeper can only edit own platform transactions")
 
     old_bill_date = tx.bill_date
@@ -282,7 +294,8 @@ def soft_delete_transaction(
         raise HTTPException(status_code=404, detail="transaction not found")
 
     if current_user.role == UserRole.BOOKKEEPER.value:
-        if current_user.platform_id is None or tx.platform_id != current_user.platform_id:
+        platform_ids = get_user_platform_ids(db, current_user)
+        if tx.platform_id not in platform_ids:
             raise HTTPException(status_code=403, detail="bookkeeper can only delete own platform transactions")
     try:
         assert_month_not_locked(db, tx.bill_date)
@@ -312,9 +325,15 @@ def create_offset_transactions(
     current_user: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value})),
 ):
     if current_user.role == UserRole.BOOKKEEPER.value:
-        if current_user.platform_id is None:
+        platform_ids = get_user_platform_ids(db, current_user)
+        if not platform_ids:
             raise HTTPException(status_code=400, detail="bookkeeper has no platform binding")
-        effective_platform_id = current_user.platform_id
+        if payload.platform_id is None:
+            effective_platform_id = platform_ids[0]
+        else:
+            if payload.platform_id not in platform_ids:
+                raise HTTPException(status_code=403, detail="no permission for selected platform")
+            effective_platform_id = payload.platform_id
     else:
         if payload.platform_id is None:
             raise HTTPException(status_code=400, detail="platform_id is required")

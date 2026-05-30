@@ -9,7 +9,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_roles
+from app.core.deps import require_module, require_roles
 from app.core.time_utils import beijing_now
 from app.models.entities import (
     AccountSnapshot,
@@ -24,6 +24,7 @@ from app.models.entities import (
     Shift,
     Transaction,
     User,
+    UserPlatformAccess,
 )
 from app.models.enums import UserRole
 from app.services.month_lock import month_key
@@ -39,6 +40,7 @@ BACKUP_TABLES = [
     ("payment_methods", PaymentMethod),
     ("categories", Category),
     ("users", User),
+    ("user_platform_access", UserPlatformAccess),
     ("transactions", Transaction),
     ("daily_summaries", DailySummary),
     ("account_snapshots", AccountSnapshot),
@@ -52,7 +54,7 @@ BACKUP_TABLES = [
 @router.get("/month-locks")
 def list_month_locks(
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("system.tools")),
 ):
     return db.execute(select(MonthLock).order_by(MonthLock.lock_month.desc())).scalars().all()
 
@@ -62,7 +64,7 @@ def lock_month(
     year: int,
     month: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     if month < 1 or month > 12:
         raise HTTPException(status_code=400, detail="invalid month")
@@ -84,7 +86,7 @@ def unlock_month(
     year: int,
     month: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     if month < 1 or month > 12:
         raise HTTPException(status_code=400, detail="invalid month")
@@ -141,7 +143,7 @@ def list_logs(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+    _: User = Depends(require_module("logs", {UserRole.ADMIN.value})),
 ):
     total = db.execute(select(func.count(AuditLog.id))).scalar_one()
     rows = db.execute(
@@ -154,7 +156,7 @@ def list_logs(
 def profit_by_platform(
     platform_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.charts")),
 ):
     rows = db.execute(
         select(Transaction.platform_id, func.sum(Transaction.amount), Transaction.type)
@@ -189,7 +191,7 @@ def profit_by_platform(
 def income_expense_trend(
     platform_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.charts")),
 ):
     stmt = select(DailySummary.bill_date, func.sum(DailySummary.total_income), func.sum(DailySummary.total_expense), func.sum(DailySummary.net_profit))
     if platform_id:
@@ -204,7 +206,7 @@ def income_expense_trend(
 @router.get("/backup/export")
 def export_backup(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     payload = _build_backup_payload(db, current_user.username)
 
@@ -220,7 +222,7 @@ def export_backup(
 @router.post("/backup/create")
 def create_server_backup(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     filename = _write_server_backup(db, current_user.username, "manual_backup")
     db.add(
@@ -238,7 +240,7 @@ def create_server_backup(
 
 @router.get("/backup/files")
 def list_backup_files(
-    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+    _: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     if not BACKUP_DIR.exists():
         return []
@@ -258,7 +260,7 @@ def list_backup_files(
 @router.get("/backup/files/{filename}")
 def download_backup_file(
     filename: str,
-    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+    _: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     if "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="invalid filename")
@@ -276,7 +278,7 @@ def download_backup_file(
 @router.delete("/backup/files/{filename}")
 def delete_backup_file(
     filename: str,
-    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+    _: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     if "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="invalid filename")
@@ -291,7 +293,7 @@ def delete_backup_file(
 async def restore_backup(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     if not file.filename.lower().endswith(".json"):
         raise HTTPException(status_code=400, detail="backup file must be json")
@@ -325,7 +327,7 @@ async def restore_backup(
 def delete_data_before_date(
     before_date: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     backup_filename = _write_server_backup(db, current_user.username, f"delete_before_date:{before_date}")
     now = beijing_now().replace(tzinfo=None)
@@ -358,7 +360,7 @@ def delete_data_before_date(
 def delete_data_by_date(
     bill_date: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_module("system.tools", {UserRole.ADMIN.value})),
 ):
     backup_filename = _write_server_backup(db, current_user.username, f"delete_by_date:{bill_date}")
     now = beijing_now().replace(tzinfo=None)

@@ -7,6 +7,7 @@ export const useAuthStore = defineStore('auth', {
     username: localStorage.getItem('username') || '',
     role: localStorage.getItem('role') || '',
     platformId: localStorage.getItem('platformId') ? Number(localStorage.getItem('platformId')) : null,
+    platformIds: JSON.parse(localStorage.getItem('platformIds') || '[]'),
     moduleKeys: JSON.parse(localStorage.getItem('moduleKeys') || '[]'),
   }),
   actions: {
@@ -16,6 +17,7 @@ export const useAuthStore = defineStore('auth', {
       this.username = payload.username
       this.role = data.role
       this.platformId = data.platform_id
+      this.platformIds = data.platform_ids || (data.platform_id ? [data.platform_id] : [])
       localStorage.setItem('token', data.access_token)
       localStorage.setItem('username', payload.username)
       localStorage.setItem('role', data.role)
@@ -24,7 +26,10 @@ export const useAuthStore = defineStore('auth', {
       } else {
         localStorage.setItem('platformId', String(data.platform_id))
       }
+      localStorage.setItem('platformIds', JSON.stringify(this.platformIds))
       const me = await http.get('/auth/me')
+      this.platformIds = me.data.platform_ids || this.platformIds
+      localStorage.setItem('platformIds', JSON.stringify(this.platformIds))
       this.moduleKeys = me.data.module_keys || []
       localStorage.setItem('moduleKeys', JSON.stringify(this.moduleKeys))
     },
@@ -33,11 +38,13 @@ export const useAuthStore = defineStore('auth', {
       this.username = ''
       this.role = ''
       this.platformId = null
+      this.platformIds = []
       this.moduleKeys = []
       localStorage.removeItem('token')
       localStorage.removeItem('username')
       localStorage.removeItem('role')
       localStorage.removeItem('platformId')
+      localStorage.removeItem('platformIds')
       localStorage.removeItem('moduleKeys')
     },
   },

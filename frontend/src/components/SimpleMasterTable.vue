@@ -26,9 +26,24 @@ function resetForm() {
   })
 }
 
+function nextSortOrder() {
+  const values = items.value
+    .map((x) => Number(x.sort_order))
+    .filter((x) => Number.isFinite(x))
+  if (values.length === 0) return 0
+  return Math.max(...values) + 1
+}
+
 async function load() {
-  const { data } = await http.get(`/master/${props.endpoint}`)
-  items.value = data
+  try {
+    const { data } = await http.get(`/master/${props.endpoint}`)
+    items.value = data
+    if (Object.prototype.hasOwnProperty.call(form, 'sort_order')) {
+      form.sort_order = nextSortOrder()
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '加载失败')
+  }
 }
 
 async function submit() {
@@ -37,7 +52,12 @@ async function submit() {
     await http.post(`/master/${props.endpoint}`, form)
     ElMessage.success('新增成功')
     resetForm()
+    if (Object.prototype.hasOwnProperty.call(form, 'sort_order')) {
+      form.sort_order = nextSortOrder()
+    }
     await load()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '新增失败')
   } finally {
     saving.value = false
   }
@@ -51,17 +71,26 @@ function startEdit(row) {
 }
 
 async function saveEdit(id) {
-  await http.put(`/master/${props.endpoint}/${id}`, editForm)
-  ElMessage.success('修改成功')
-  editingId.value = null
-  await load()
+  try {
+    await http.put(`/master/${props.endpoint}/${id}`, editForm)
+    ElMessage.success('修改成功')
+    editingId.value = null
+    await load()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '保存失败')
+  }
 }
 
 async function removeRow(id) {
-  await ElMessageBox.confirm('确认删除该记录吗？', '提示', { type: 'warning' })
-  await http.delete(`/master/${props.endpoint}/${id}`)
-  ElMessage.success('删除成功')
-  await load()
+  try {
+    await ElMessageBox.confirm('确认删除该记录吗？', '提示', { type: 'warning' })
+    await http.delete(`/master/${props.endpoint}/${id}`)
+    ElMessage.success('删除成功')
+    await load()
+  } catch (err) {
+    if (err === 'cancel') return
+    ElMessage.error(err?.response?.data?.detail || '删除失败')
+  }
 }
 
 onMounted(() => {

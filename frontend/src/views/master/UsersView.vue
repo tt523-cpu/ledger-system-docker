@@ -3,7 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../../api/http'
 
-const form = reactive({ username: '', password: '', role: 'bookkeeper', status: 'enabled', platform_id: null })
+const form = reactive({ username: '', password: '', role: 'bookkeeper', status: 'enabled', platform_ids: [] })
 const users = ref([])
 const platforms = ref([])
 const modules = ref([])
@@ -11,7 +11,10 @@ const roleModules = reactive({ admin: [], bookkeeper: [], viewer: [] })
 
 async function load() {
   const [u, p, rp] = await Promise.all([http.get('/master/users'), http.get('/master/platforms'), http.get('/master/role-permissions')])
-  users.value = u.data
+  users.value = (u.data || []).map((row) => ({
+    ...row,
+    platform_ids: row.platform_ids || (row.platform_id ? [row.platform_id] : []),
+  }))
   platforms.value = p.data
   modules.value = rp.data.modules || []
   roleModules.admin = [...(rp.data.role_modules?.admin || [])]
@@ -25,16 +28,24 @@ async function saveRoleModules(role) {
 }
 
 async function createUser() {
-  await http.post('/master/users', null, { params: form })
+  await http.post('/master/users', null, {
+    params: {
+      username: form.username,
+      password: form.password,
+      role: form.role,
+      status: form.status,
+      platform_ids: (form.platform_ids || []).join(','),
+    },
+  })
   ElMessage.success('创建成功')
   form.username = ''
   form.password = ''
-  form.platform_id = null
+  form.platform_ids = []
   await load()
 }
 
 async function updateUser(row) {
-  await http.put(`/master/users/${row.id}`, null, { params: { role: row.role, status: row.status, platform_id: row.platform_id } })
+  await http.put(`/master/users/${row.id}`, null, { params: { role: row.role, status: row.status, platform_ids: (row.platform_ids || []).join(',') } })
   ElMessage.success('更新成功')
   await load()
 }
@@ -75,7 +86,7 @@ onMounted(load)
         </el-select>
       </el-form-item>
       <el-form-item label="所属平台">
-        <el-select v-model="form.platform_id" clearable style="width: 180px">
+        <el-select v-model="form.platform_ids" multiple collapse-tags collapse-tags-tooltip style="width: 260px">
           <el-option v-for="p in platforms" :key="p.id" :value="p.id" :label="p.name" />
         </el-select>
       </el-form-item>
@@ -103,7 +114,7 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="所属平台">
         <template #default="{ row }">
-          <el-select v-model="row.platform_id" clearable style="width: 180px">
+          <el-select v-model="row.platform_ids" multiple collapse-tags collapse-tags-tooltip style="width: 260px">
             <el-option v-for="p in platforms" :key="p.id" :value="p.id" :label="p.name" />
           </el-select>
         </template>

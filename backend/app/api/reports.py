@@ -5,7 +5,7 @@ from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_roles
+from app.core.deps import require_module, require_roles
 from app.models.entities import (
     AuditLog,
     Category,
@@ -50,7 +50,7 @@ def list_daily_summaries(
     shift_id: int | None = Query(default=None),
     platform_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.query")),
 ):
     stmt = select(DailySummary)
     if bill_date:
@@ -69,7 +69,7 @@ def monthly_summary(
     month: int,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.monthly")),
 ):
     stmt = select(
         func.sum(DailySummary.total_income),
@@ -96,7 +96,7 @@ def monthly_detail(
     month: int,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.monthly")),
 ):
     summary_stmt = select(
         func.sum(DailySummary.total_income),
@@ -232,7 +232,7 @@ def monthly_detail(
 
 
 @router.post("/monthly/rebuild")
-def rebuild_monthly(year: int, month: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles({UserRole.ADMIN.value}))):
+def rebuild_monthly(year: int, month: int, db: Session = Depends(get_db), current_user: User = Depends(require_module("reports.monthly", {UserRole.ADMIN.value}))):
     check_date = date(year, month, 1)
     try:
         assert_month_not_locked(db, check_date)
@@ -256,7 +256,7 @@ def rebuild_monthly(year: int, month: int, db: Session = Depends(get_db), curren
 
 
 @router.get("/dashboard")
-def dashboard(db: Session = Depends(get_db), _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value}))):
+def dashboard(db: Session = Depends(get_db), _: User = Depends(require_module("dashboard"))):
     today = date.today()
     month_start = today.replace(day=1)
     today_data = db.execute(
@@ -315,7 +315,7 @@ def report_query(
     shift_id: int | None = None,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.query")),
 ):
     stmt = select(DailySummary).where(DailySummary.bill_date >= start_date, DailySummary.bill_date <= end_date)
     if shift_id:
@@ -449,7 +449,7 @@ def payment_balances(
     shift_id: int | None = None,
     payment_method_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.balances")),
 ):
     stmt_methods = select(PaymentMethod).where(PaymentMethod.status == "enabled")
     if payment_method_id:
@@ -525,7 +525,7 @@ def payment_balances(
 def handover_report(
     bill_date: str,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.query")),
 ):
     shift_rows = db.execute(
         select(DailySummary.shift_id, func.sum(DailySummary.total_income), func.sum(DailySummary.total_expense), func.sum(DailySummary.net_profit))
@@ -570,7 +570,7 @@ def handover_report(
 def confirm_handover(
     bill_date: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value})),
+    current_user: User = Depends(require_module("reports.query", {UserRole.ADMIN.value, UserRole.BOOKKEEPER.value})),
 ):
     report = handover_report(bill_date=bill_date, db=db, _=None)
 
@@ -624,7 +624,7 @@ def confirm_handover(
 def get_confirmed_handover(
     bill_date: str,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    _: User = Depends(require_module("reports.query")),
 ):
     shifts = db.execute(select(HandoverSnapshot).where(HandoverSnapshot.bill_date == bill_date).order_by(HandoverSnapshot.shift_id.asc())).scalars().all()
     if not shifts:

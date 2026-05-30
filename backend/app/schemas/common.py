@@ -91,6 +91,7 @@ class TokenOut(BaseModel):
     token_type: str = "bearer"
     role: str
     platform_id: int | None = None
+    platform_ids: list[int] = Field(default_factory=list)
 
 
 class AccountCreate(BaseModel):
