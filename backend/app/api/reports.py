@@ -5,7 +5,7 @@ from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_module, require_roles
+from app.core.deps import get_accessible_platform_ids, require_module, require_roles
 from app.models.entities import (
     AuditLog,
     Category,
@@ -14,6 +14,8 @@ from app.models.entities import (
     HandoverSnapshot,
     PaymentMethod,
     Platform,
+    Tenant,
+    TenantPlatformAccess,
     Transaction,
 )
 from app.models.entities import User
@@ -24,6 +26,12 @@ from app.services.summary import rebuild_daily_summary
 
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+
+def _scoped_platform_ids(db: Session, current_user: User) -> list[int] | None:
+    if current_user.role in {UserRole.SUPER_ADMIN.value, UserRole.PLATFORM_VIEWER.value}:
+        return None
+    return get_accessible_platform_ids(db, current_user)
 
 
 def build_expense_items(db: Session, rows: list[tuple[int | None, str | None, float]]) -> list[dict]:
@@ -44,15 +52,153 @@ def format_expense_items(items: list[dict]) -> str:
     return "，".join(f"{it['name']}:{it['amount']:.2f}" for it in items)
 
 
+@router.get("/super/tenant-summary")
+def super_tenant_summary(
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+    tenant_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles({UserRole.SUPER_ADMIN.value, UserRole.PLATFORM_VIEWER.value})),
+):
+    stmt = (
+        select(
+            Tenant.id,
+            Tenant.name,
+            func.sum(DailySummary.total_income),
+            func.sum(DailySummary.total_expense),
+            func.sum(DailySummary.net_profit),
+        )
+        .select_from(Tenant)
+        .join(TenantPlatformAccess, TenantPlatformAccess.tenant_id == Tenant.id)
+        .join(DailySummary, DailySummary.platform_id == TenantPlatformAccess.platform_id)
+    )
+    if start_date:
+        stmt = stmt.where(DailySummary.bill_date >= start_date)
+    if end_date:
+        stmt = stmt.where(DailySummary.bill_date <= end_date)
+    if tenant_id:
+        stmt = stmt.where(Tenant.id == tenant_id)
+    rows = db.execute(stmt.group_by(Tenant.id, Tenant.name).order_by(Tenant.id.asc())).all()
+    items = [
+        {
+            "tenant_id": r[0],
+            "tenant_name": r[1],
+            "income": float(r[2] or 0),
+            "expense": float(r[3] or 0),
+            "net": float(r[4] or 0),
+        }
+        for r in rows
+    ]
+    total_income = sum(x["income"] for x in items)
+    total_expense = sum(x["expense"] for x in items)
+    total_net = sum(x["net"] for x in items)
+    return {
+        "items": items,
+        "summary": {"income": total_income, "expense": total_expense, "net": total_net},
+        "start_date": start_date,
+        "end_date": end_date,
+        "tenant_id": tenant_id,
+    }
+
+
+@router.get("/super/tenant-account-balances")
+def super_tenant_account_balances(
+    bill_date: str,
+    tenant_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles({UserRole.SUPER_ADMIN.value, UserRole.PLATFORM_VIEWER.value})),
+):
+    tenants_stmt = select(Tenant).order_by(Tenant.id.asc())
+    if tenant_id:
+        tenants_stmt = tenants_stmt.where(Tenant.id == tenant_id)
+    tenants = db.execute(tenants_stmt).scalars().all()
+    items = []
+    grand_total = 0.0
+    for t in tenants:
+        platform_ids = [
+            r[0] for r in db.execute(select(TenantPlatformAccess.platform_id).where(TenantPlatformAccess.tenant_id == t.id)).all()
+        ]
+        method_ids = []
+        if platform_ids:
+            method_ids = [
+                r[0]
+                for r in db.execute(
+                    select(Transaction.payment_method_id)
+                    .where(
+                        Transaction.platform_id.in_(platform_ids),
+                        Transaction.bill_date <= bill_date,
+                        Transaction.deleted_at.is_(None),
+                        Transaction.payment_method_id.is_not(None),
+                    )
+                    .group_by(Transaction.payment_method_id)
+                    .order_by(Transaction.payment_method_id.asc())
+                ).all()
+            ]
+        methods = (
+            db.execute(select(PaymentMethod).where(PaymentMethod.id.in_(method_ids))).scalars().all() if method_ids else []
+        )
+        account_items = []
+        tenant_total = 0.0
+        for pm in methods:
+            balance = float(pm.initial_balance or 0)
+            if platform_ids:
+                rows = db.execute(
+                    select(func.sum(Transaction.amount), Transaction.type)
+                    .where(
+                        Transaction.payment_method_id == pm.id,
+                        Transaction.bill_date <= bill_date,
+                        Transaction.deleted_at.is_(None),
+                        Transaction.platform_id.in_(platform_ids),
+                    )
+                    .group_by(Transaction.type)
+                ).all()
+                for amount_sum, tx_type in rows:
+                    if tx_type == "income":
+                        balance += float(amount_sum or 0)
+                    elif tx_type == "expense":
+                        balance -= float(amount_sum or 0)
+            account_items.append(
+                {
+                    "payment_method_id": pm.id,
+                    "payment_method_name": pm.name,
+                    "channel_kind": pm.channel_kind,
+                    "balance": balance,
+                }
+            )
+            tenant_total += balance
+
+        items.append(
+            {
+                "tenant_id": t.id,
+                "tenant_name": t.name,
+                "accounts": account_items,
+                "tenant_total": tenant_total,
+            }
+        )
+        grand_total += tenant_total
+
+    return {
+        "bill_date": bill_date,
+        "tenant_id": tenant_id,
+        "items": items,
+        "grand_total": grand_total,
+    }
+
+
 @router.get("/daily", response_model=list[DailySummaryOut])
 def list_daily_summaries(
     bill_date: str | None = Query(default=None),
     shift_id: int | None = Query(default=None),
     platform_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.query")),
+    current_user: User = Depends(require_module("reports.query")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        return []
     stmt = select(DailySummary)
+    if allowed is not None:
+        stmt = stmt.where(DailySummary.platform_id.in_(allowed))
     if bill_date:
         stmt = stmt.where(DailySummary.bill_date == bill_date)
     if shift_id:
@@ -69,8 +215,11 @@ def monthly_summary(
     month: int,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.monthly")),
+    current_user: User = Depends(require_module("reports.monthly")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        return MonthlySummaryOut(month=f"{year:04d}-{month:02d}", total_income=0, total_expense=0, net_profit=0)
     stmt = select(
         func.sum(DailySummary.total_income),
         func.sum(DailySummary.total_expense),
@@ -79,7 +228,11 @@ def monthly_summary(
         extract("year", DailySummary.bill_date) == year,
         extract("month", DailySummary.bill_date) == month,
     )
+    if allowed is not None:
+        stmt = stmt.where(DailySummary.platform_id.in_(allowed))
     if platform_id:
+        if allowed is not None and platform_id not in allowed:
+            return MonthlySummaryOut(month=f"{year:04d}-{month:02d}", total_income=0, total_expense=0, net_profit=0)
         stmt = stmt.where(DailySummary.platform_id == platform_id)
     row = db.execute(stmt).first()
     data = {
@@ -96,8 +249,11 @@ def monthly_detail(
     month: int,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.monthly")),
+    current_user: User = Depends(require_module("reports.monthly")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        return {"month": f"{year:04d}-{month:02d}", "platform_id": platform_id, "platform_name": None, "summary": {"income": 0.0, "expense": 0.0, "net": 0.0}, "expense_items": [], "account_balances": [], "platform_summaries": []}
     summary_stmt = select(
         func.sum(DailySummary.total_income),
         func.sum(DailySummary.total_expense),
@@ -106,7 +262,11 @@ def monthly_detail(
         extract("year", DailySummary.bill_date) == year,
         extract("month", DailySummary.bill_date) == month,
     )
+    if allowed is not None:
+        summary_stmt = summary_stmt.where(DailySummary.platform_id.in_(allowed))
     if platform_id:
+        if allowed is not None and platform_id not in allowed:
+            return {"month": f"{year:04d}-{month:02d}", "platform_id": platform_id, "platform_name": None, "summary": {"income": 0.0, "expense": 0.0, "net": 0.0}, "expense_items": [], "account_balances": [], "platform_summaries": []}
         summary_stmt = summary_stmt.where(DailySummary.platform_id == platform_id)
     summary_row = db.execute(summary_stmt).first()
     summary = {
@@ -122,6 +282,8 @@ def monthly_detail(
         Transaction.deleted_at.is_(None),
         Transaction.category_id.is_not(None),
     )
+    if allowed is not None:
+        expense_stmt = expense_stmt.where(Transaction.platform_id.in_(allowed))
     if platform_id:
         expense_stmt = expense_stmt.where(Transaction.platform_id == platform_id)
     expense_rows = db.execute(expense_stmt.group_by(Transaction.category_id)).all()
@@ -150,6 +312,7 @@ def monthly_detail(
                 Transaction.payment_method_id == pm.id,
                 Transaction.bill_date < month_start,
                 Transaction.deleted_at.is_(None),
+                Transaction.platform_id.in_(allowed) if allowed is not None else True,
                 Transaction.platform_id == platform_id if platform_id else True,
             )
             .group_by(Transaction.type)
@@ -168,6 +331,7 @@ def monthly_detail(
                 Transaction.bill_date >= month_start,
                 Transaction.bill_date < next_month_start,
                 Transaction.deleted_at.is_(None),
+                Transaction.platform_id.in_(allowed) if allowed is not None else True,
                 Transaction.platform_id == platform_id if platform_id else True,
             )
             .group_by(Transaction.type)
@@ -201,6 +365,8 @@ def monthly_detail(
         extract("year", DailySummary.bill_date) == year,
         extract("month", DailySummary.bill_date) == month,
     )
+    if allowed is not None:
+        platform_rows_stmt = platform_rows_stmt.where(DailySummary.platform_id.in_(allowed))
     if platform_id:
         platform_rows_stmt = platform_rows_stmt.where(DailySummary.platform_id == platform_id)
     platform_rows = db.execute(platform_rows_stmt.group_by(DailySummary.platform_id)).all()
@@ -239,12 +405,16 @@ def rebuild_monthly(year: int, month: int, db: Session = Depends(get_db), curren
     except ValueError as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from exc
 
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        return {"rebuild_groups": 0}
     rows = db.execute(
         select(Transaction.bill_date, Transaction.shift_id, Transaction.platform_id)
         .where(
             extract("year", Transaction.bill_date) == year,
             extract("month", Transaction.bill_date) == month,
             Transaction.deleted_at.is_(None),
+            Transaction.platform_id.in_(allowed) if allowed is not None else True,
         )
         .group_by(Transaction.bill_date, Transaction.shift_id, Transaction.platform_id)
     ).all()
@@ -256,22 +426,25 @@ def rebuild_monthly(year: int, month: int, db: Session = Depends(get_db), curren
 
 
 @router.get("/dashboard")
-def dashboard(db: Session = Depends(get_db), _: User = Depends(require_module("dashboard"))):
+def dashboard(db: Session = Depends(get_db), current_user: User = Depends(require_module("dashboard"))):
     today = date.today()
     month_start = today.replace(day=1)
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        return {"today": {"income": 0.0, "expense": 0.0, "net": 0.0}, "month": {"income": 0.0, "expense": 0.0, "net": 0.0}, "trend7": []}
     today_data = db.execute(
         select(
             func.sum(DailySummary.total_income),
             func.sum(DailySummary.total_expense),
             func.sum(DailySummary.net_profit),
-        ).where(DailySummary.bill_date == today)
+        ).where(DailySummary.bill_date == today, DailySummary.platform_id.in_(allowed) if allowed is not None else True)
     ).first()
     month_data = db.execute(
         select(
             func.sum(DailySummary.total_income),
             func.sum(DailySummary.total_expense),
             func.sum(DailySummary.net_profit),
-        ).where(DailySummary.bill_date >= month_start, DailySummary.bill_date <= today)
+        ).where(DailySummary.bill_date >= month_start, DailySummary.bill_date <= today, DailySummary.platform_id.in_(allowed) if allowed is not None else True)
     ).first()
 
     trend_days = [today - timedelta(days=i) for i in range(6, -1, -1)]
@@ -282,7 +455,7 @@ def dashboard(db: Session = Depends(get_db), _: User = Depends(require_module("d
                 func.sum(DailySummary.total_income),
                 func.sum(DailySummary.total_expense),
                 func.sum(DailySummary.net_profit),
-            ).where(DailySummary.bill_date == d)
+            ).where(DailySummary.bill_date == d, DailySummary.platform_id.in_(allowed) if allowed is not None else True)
         ).first()
         trend.append(
             {
@@ -315,12 +488,19 @@ def report_query(
     shift_id: int | None = None,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.query")),
+    current_user: User = Depends(require_module("reports.query")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        return {"items": [], "summary": {"income": 0.0, "expense": 0.0, "net": 0.0}, "platform_summaries": [], "expense_items": [], "start_date": start_date, "end_date": end_date}
     stmt = select(DailySummary).where(DailySummary.bill_date >= start_date, DailySummary.bill_date <= end_date)
+    if allowed is not None:
+        stmt = stmt.where(DailySummary.platform_id.in_(allowed))
     if shift_id:
         stmt = stmt.where(DailySummary.shift_id == shift_id)
     if platform_id:
+        if allowed is not None and platform_id not in allowed:
+            return {"items": [], "summary": {"income": 0.0, "expense": 0.0, "net": 0.0}, "platform_summaries": [], "expense_items": [], "start_date": start_date, "end_date": end_date}
         stmt = stmt.where(DailySummary.platform_id == platform_id)
     rows = db.execute(stmt.order_by(DailySummary.bill_date.asc(), DailySummary.shift_id.asc(), DailySummary.platform_id.asc())).scalars().all()
 
@@ -338,6 +518,8 @@ def report_query(
     )
     if shift_id:
         expense_stmt = expense_stmt.where(Transaction.shift_id == shift_id)
+    if allowed is not None:
+        expense_stmt = expense_stmt.where(Transaction.platform_id.in_(allowed))
     if platform_id:
         expense_stmt = expense_stmt.where(Transaction.platform_id == platform_id)
     expense_rows = db.execute(expense_stmt.group_by(Transaction.category_id)).all()
@@ -365,6 +547,8 @@ def report_query(
     )
     if shift_id:
         row_expense_stmt = row_expense_stmt.where(Transaction.shift_id == shift_id)
+    if allowed is not None:
+        row_expense_stmt = row_expense_stmt.where(Transaction.platform_id.in_(allowed))
     if platform_id:
         row_expense_stmt = row_expense_stmt.where(Transaction.platform_id == platform_id)
     row_expense_rows = db.execute(
@@ -416,6 +600,8 @@ def report_query(
         func.sum(DailySummary.total_expense),
         func.sum(DailySummary.net_profit),
     ).where(DailySummary.bill_date >= start_date, DailySummary.bill_date <= end_date)
+    if allowed is not None:
+        platform_summary_stmt = platform_summary_stmt.where(DailySummary.platform_id.in_(allowed))
     if shift_id:
         platform_summary_stmt = platform_summary_stmt.where(DailySummary.shift_id == shift_id)
     if platform_id:
@@ -449,8 +635,11 @@ def payment_balances(
     shift_id: int | None = None,
     payment_method_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.balances")),
+    current_user: User = Depends(require_module("reports.balances")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        return []
     stmt_methods = select(PaymentMethod).where(PaymentMethod.status == "enabled")
     if payment_method_id:
         stmt_methods = stmt_methods.where(PaymentMethod.id == payment_method_id)
@@ -463,6 +652,7 @@ def payment_balances(
                 Transaction.payment_method_id == pm.id,
                 Transaction.bill_date < bill_date,
                 Transaction.deleted_at.is_(None),
+                Transaction.platform_id.in_(allowed) if allowed is not None else True,
             )
             .group_by(Transaction.type)
         ).all()
@@ -480,6 +670,7 @@ def payment_balances(
                 Transaction.bill_date == bill_date,
                 Transaction.deleted_at.is_(None),
                 Transaction.shift_id == shift_id if shift_id else True,
+                Transaction.platform_id.in_(allowed) if allowed is not None else True,
             )
             .group_by(Transaction.type)
         ).all()
@@ -499,6 +690,7 @@ def payment_balances(
                 Transaction.deleted_at.is_(None),
                 Transaction.type == "expense",
                 Transaction.shift_id == shift_id if shift_id else True,
+                Transaction.platform_id.in_(allowed) if allowed is not None else True,
             )
             .group_by(Transaction.category_id, Transaction.biz_type_label)
         ).all()
@@ -525,11 +717,14 @@ def payment_balances(
 def handover_report(
     bill_date: str,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.query")),
+    current_user: User = Depends(require_module("reports.query")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        return {"bill_date": bill_date, "shifts": [], "payment_balances": []}
     shift_rows = db.execute(
         select(DailySummary.shift_id, func.sum(DailySummary.total_income), func.sum(DailySummary.total_expense), func.sum(DailySummary.net_profit))
-        .where(DailySummary.bill_date == bill_date)
+        .where(DailySummary.bill_date == bill_date, DailySummary.platform_id.in_(allowed) if allowed is not None else True)
         .group_by(DailySummary.shift_id)
         .order_by(DailySummary.shift_id.asc())
     ).all()
@@ -539,6 +734,7 @@ def handover_report(
             Transaction.bill_date == bill_date,
             Transaction.type == "expense",
             Transaction.deleted_at.is_(None),
+            Transaction.platform_id.in_(allowed) if allowed is not None else True,
         )
         .group_by(Transaction.shift_id, Transaction.category_id, Transaction.biz_type_label)
     ).all()
@@ -624,11 +820,28 @@ def confirm_handover(
 def get_confirmed_handover(
     bill_date: str,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.query")),
+    current_user: User = Depends(require_module("reports.query")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
     shifts = db.execute(select(HandoverSnapshot).where(HandoverSnapshot.bill_date == bill_date).order_by(HandoverSnapshot.shift_id.asc())).scalars().all()
     if not shifts:
         return {"confirmed": False, "bill_date": bill_date, "shifts": [], "payment_balances": []}
+
+    if allowed is not None:
+        shift_ids = [s.shift_id for s in shifts]
+        check = db.execute(
+            select(DailySummary.shift_id)
+            .where(
+                DailySummary.bill_date == bill_date,
+                DailySummary.shift_id.in_(shift_ids),
+                DailySummary.platform_id.in_(allowed),
+            )
+            .group_by(DailySummary.shift_id)
+        ).all()
+        allowed_shift_ids = {int(r[0]) for r in check}
+        shifts = [s for s in shifts if int(s.shift_id) in allowed_shift_ids]
+        if not shifts:
+            return {"confirmed": False, "bill_date": bill_date, "shifts": [], "payment_balances": []}
 
     pm_rows = db.execute(
         select(HandoverPaymentSnapshot)

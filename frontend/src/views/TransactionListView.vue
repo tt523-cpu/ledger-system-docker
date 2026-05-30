@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
+import { Search } from '@element-plus/icons-vue'
 import http from '../api/http'
 import { useAuthStore } from '../stores/auth'
 
@@ -28,6 +29,7 @@ const dateForm = reactive({
 })
 const total = ref(0)
 const items = ref([])
+const summary = reactive({ recharge: 0, redeem: 0, expense: 0, expense_detail: '' })
 const platforms = ref([])
 const accounts = ref([])
 const categories = ref([])
@@ -43,20 +45,14 @@ const tableHeight = computed(() => {
   return Math.max(420, viewportHeight.value - 330)
 })
 
-const totalRecharge = computed(() => {
-  return items.value.reduce((sum, row) => {
-    const label = row.biz_type_label || typeLabelMap[row.type] || ''
-    if (label !== '充值') return sum
-    return sum + Number(row.amount || 0)
-  }, 0)
-})
-
-const totalRedeem = computed(() => {
-  return items.value.reduce((sum, row) => {
-    const label = row.biz_type_label || typeLabelMap[row.type] || ''
-    if (label !== '兑奖') return sum
-    return sum + Number(row.amount || 0)
-  }, 0)
+const totalRecharge = computed(() => Number(summary.recharge || 0))
+const totalRedeem = computed(() => Number(summary.redeem || 0))
+const totalExpense = computed(() => Number(summary.expense || 0))
+const totalNet = computed(() => totalRecharge.value - totalExpense.value)
+const totalExpenseText = computed(() => {
+  const amount = formatMoney(totalExpense.value)
+  const detail = String(summary.expense_detail || '').trim()
+  return detail ? `${amount}（${detail}）` : amount
 })
 
 function formatMoney(v) {
@@ -72,6 +68,10 @@ async function load() {
   const { data } = await http.get('/transactions', { params })
   items.value = data.items
   total.value = data.total
+  summary.recharge = Number(data.summary?.recharge || 0)
+  summary.redeem = Number(data.summary?.redeem || 0)
+  summary.expense = Number(data.summary?.expense || 0)
+  summary.expense_detail = data.summary?.expense_detail || ''
 }
 
 function buildQueryParams() {
@@ -229,38 +229,61 @@ onBeforeUnmount(() => {
 <template>
   <el-card>
     <template #header>流水查询</template>
-    <el-form inline>
-      <el-form-item label="日期方式">
-        <el-select v-model="dateMode" style="width: 120px" @change="onDateModeChange">
+    <el-form class="filter-form" @submit.prevent>
+      <div class="filter-row">
+      <el-form-item label="日期方式" class="compact-item">
+        <el-select v-model="dateMode" style="width: 130px" @change="onDateModeChange">
           <el-option value="day" label="按天" />
           <el-option value="week" label="按周" />
           <el-option value="month" label="按月" />
           <el-option value="custom" label="自定义" />
         </el-select>
       </el-form-item>
-      <el-form-item v-if="dateMode==='day'" label="日期"><el-date-picker v-model="dateForm.day" value-format="YYYY-MM-DD" /></el-form-item>
-      <el-form-item v-if="dateMode==='week'" label="任意日期"><el-date-picker v-model="dateForm.week" value-format="YYYY-MM-DD" /></el-form-item>
-      <el-form-item v-if="dateMode==='month'" label="月份"><el-date-picker v-model="dateForm.month" type="month" value-format="YYYY-MM" /></el-form-item>
-      <el-form-item v-if="dateMode==='custom'" label="日期范围"><el-date-picker v-model="dateForm.range" type="daterange" value-format="YYYY-MM-DD" /></el-form-item>
-      <el-form-item label="类别">
-        <el-select v-model="query.tx_type" style="width: 130px">
+      <el-form-item v-if="dateMode==='day'" label="日期" class="compact-item"><el-date-picker v-model="dateForm.day" value-format="YYYY-MM-DD" style="width: 170px" /></el-form-item>
+      <el-form-item v-if="dateMode==='week'" label="任意日期" class="compact-item"><el-date-picker v-model="dateForm.week" value-format="YYYY-MM-DD" style="width: 170px" /></el-form-item>
+      <el-form-item v-if="dateMode==='month'" label="月份" class="compact-item"><el-date-picker v-model="dateForm.month" type="month" value-format="YYYY-MM" style="width: 170px" /></el-form-item>
+      <el-form-item v-if="dateMode==='custom'" label="日期范围" class="compact-item"><el-date-picker v-model="dateForm.range" type="daterange" value-format="YYYY-MM-DD" style="width: 260px" /></el-form-item>
+      <el-form-item label="类别" class="compact-item">
+        <el-select v-model="query.tx_type" style="width: 140px">
           <el-option value="all" label="全部" />
           <el-option value="income" label="收入" />
           <el-option value="expense" label="支出" />
           <el-option value="adjust" label="回冲" />
         </el-select>
       </el-form-item>
-      <el-form-item label="项目">
+      <el-form-item label="项目" class="compact-item">
         <el-select v-model="query.category_id" filterable style="width: 180px">
           <el-option value="all" label="全部" />
           <el-option v-for="c in categories" :key="c.id" :value="c.id" :label="c.name" />
         </el-select>
       </el-form-item>
-      <el-form-item label="备注关键词"><el-input v-model="query.keyword" /></el-form-item>
-      <el-button type="primary" @click="onFilterChange" class="primary-query-btn">查询</el-button>
-      <div class="totals-bar">
-        <span>总充值（元）：{{ formatMoney(totalRecharge) }}</span>
-        <span>总兑奖（元）：{{ formatMoney(totalRedeem) }}</span>
+      <el-form-item label="备注" class="compact-item"><el-input v-model="query.keyword" style="width: 180px" /></el-form-item>
+      <div class="query-btn-wrap compact-item">
+        <el-button type="primary" size="default" @click="onFilterChange" class="primary-query-btn">
+          <el-icon><Search /></el-icon>
+          查询
+        </el-button>
+      </div>
+      </div>
+
+      <div class="totals-board">
+        <div class="total-card">
+          <div class="total-title">总充值（元）</div>
+          <div class="total-value">{{ formatMoney(totalRecharge) }}</div>
+        </div>
+        <div class="total-card">
+          <div class="total-title">总兑奖（元）</div>
+          <div class="total-value">{{ formatMoney(totalRedeem) }}</div>
+        </div>
+        <div class="total-card total-card-wide">
+          <div class="total-title">总支出（元）</div>
+          <div class="total-value">{{ formatMoney(totalExpense) }}</div>
+          <div v-if="summary.expense_detail" class="total-subtext">{{ summary.expense_detail }}</div>
+        </div>
+        <div class="total-card">
+          <div class="total-title">净营业（元）</div>
+          <div class="total-value">{{ formatMoney(totalNet) }}</div>
+        </div>
       </div>
     </el-form>
 
@@ -287,8 +310,10 @@ onBeforeUnmount(() => {
       <el-table-column prop="remark" label="备注" />
       <el-table-column label="操作" width="170">
         <template #default="{ row }">
-          <el-button link type="primary" @click="startEdit(row)">编辑</el-button>
-          <el-button link type="danger" @click="remove(row.id)">删除</el-button>
+          <el-space :size="6" wrap="false">
+            <el-button link type="primary" @click="startEdit(row)">编辑</el-button>
+            <el-button link type="danger" @click="remove(row.id)">删除</el-button>
+          </el-space>
         </template>
       </el-table-column>
     </el-table>
@@ -347,11 +372,90 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.totals-bar {
-  display: inline-flex;
-  gap: 20px;
-  margin-left: 12px;
-  color: #606266;
-  font-size: 14px;
+.filter-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  overflow-x: auto;
+}
+
+.compact-item {
+  margin-bottom: 8px;
+}
+
+.query-btn-wrap {
+  margin-left: auto;
+  margin-bottom: 8px;
+  flex: 0 0 auto;
+}
+
+.primary-query-btn {
+  min-width: 106px;
+}
+
+.totals-board {
+  display: flex;
+  gap: 12px;
+  margin: 2px 0 12px;
+}
+
+.total-card {
+  flex: 1;
+  min-width: 220px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f6f8fb;
+  border: 1px solid #e6ebf2;
+}
+
+.total-card-wide {
+  flex: 1.2;
+}
+
+.total-title {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+.total-value {
+  font-size: 22px;
+  line-height: 1.2;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.total-subtext {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #4b5563;
+  word-break: break-all;
+}
+
+@media (max-width: 900px) {
+  .filter-row {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .query-btn-wrap {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .primary-query-btn {
+    width: 100%;
+  }
+
+  .totals-board {
+    flex-direction: column;
+  }
+
+  .total-card,
+  .total-card-wide {
+    min-width: 0;
+    flex: 1;
+  }
 }
 </style>

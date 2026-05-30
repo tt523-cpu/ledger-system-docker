@@ -19,12 +19,26 @@ MODULES = [
     {"key": "master.entry_types", "label": "类型管理"},
     {"key": "master.shifts", "label": "班次管理"},
     {"key": "master.users", "label": "用户管理"},
+    {"key": "master.tenants", "label": "租户管理"},
+    {"key": "super.users", "label": "后台用户"},
     {"key": "logs", "label": "修改日志"},
+    {"key": "operation.logs", "label": "操作日志"},
     {"key": "system.tools", "label": "系统工具"},
 ]
 
 
 DEFAULT_ROLE_MODULES = {
+    UserRole.SUPER_ADMIN.value: [m["key"] for m in MODULES],
+    UserRole.PLATFORM_VIEWER.value: [
+        "dashboard",
+        "transactions.list",
+        "reports.query",
+        "reports.balances",
+        "reports.monthly",
+        "reports.charts",
+        "logs",
+        "operation.logs",
+    ],
     UserRole.ADMIN.value: [m["key"] for m in MODULES],
     UserRole.BOOKKEEPER.value: [
         "dashboard",
@@ -34,6 +48,7 @@ DEFAULT_ROLE_MODULES = {
         "reports.balances",
         "reports.monthly",
         "reports.charts",
+        "operation.logs",
     ],
     UserRole.VIEWER.value: [
         "dashboard",
@@ -49,12 +64,24 @@ DEFAULT_ROLE_MODULES = {
 
 def ensure_role_permissions(db: Session) -> None:
     existing = db.execute(select(RoleModulePermission)).scalars().all()
-    if existing:
+    if not existing:
+        for role, modules in DEFAULT_ROLE_MODULES.items():
+            for module_key in modules:
+                db.add(RoleModulePermission(role=role, module_key=module_key, enabled=True))
+        db.commit()
         return
+
+    existing_pairs = {(row.role, row.module_key) for row in existing}
+    changed = False
     for role, modules in DEFAULT_ROLE_MODULES.items():
         for module_key in modules:
+            key = (role, module_key)
+            if key in existing_pairs:
+                continue
             db.add(RoleModulePermission(role=role, module_key=module_key, enabled=True))
-    db.commit()
+            changed = True
+    if changed:
+        db.commit()
 
 
 def enabled_modules_for_role(db: Session, role: str) -> list[str]:

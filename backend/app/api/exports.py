@@ -8,9 +8,9 @@ from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_module
-from app.models.entities import AccountSnapshot, AuditLog, Category, DailySummary, PaymentMethod, Platform, Shift, Transaction, User
-from app.services.summary import get_monthly_summary
+from app.core.deps import get_accessible_platform_ids, require_module, require_roles
+from app.models.entities import AccountSnapshot, AuditLog, Category, DailySummary, PaymentMethod, Platform, Shift, Tenant, TenantPlatformAccess, Transaction, User
+from app.models.enums import UserRole
 
 
 router = APIRouter(prefix="/exports", tags=["exports"])
@@ -22,20 +22,31 @@ def apply_money_format(ws, cols: list[int], start_row: int = 2):
             ws.cell(row=r, column=c).number_format = "0.00"
 
 
+def _scoped_platform_ids(db: Session, current_user: User) -> list[int] | None:
+    if current_user.role == UserRole.SUPER_ADMIN.value:
+        return None
+    return get_accessible_platform_ids(db, current_user)
+
+
 @router.get("/daily-excel")
 def export_daily_excel(
     bill_date: str,
     shift_id: int | None = None,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.query")),
+    current_user: User = Depends(require_module("reports.query")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        allowed = [-1]
     wb = Workbook()
     ws = wb.active
     ws.title = "日报表"
     ws.append(["日期", "班次", "平台", "充值", "支出", "净营业"])
 
     stmt = select(DailySummary).where(DailySummary.bill_date == bill_date)
+    if allowed is not None:
+        stmt = stmt.where(DailySummary.platform_id.in_(allowed))
     if shift_id:
         stmt = stmt.where(DailySummary.shift_id == shift_id)
     if platform_id:
@@ -73,14 +84,19 @@ def export_report_query_excel(
     shift_id: int | None = None,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.query")),
+    current_user: User = Depends(require_module("reports.query")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        allowed = [-1]
     wb = Workbook()
     ws = wb.active
     ws.title = "报表查询"
     ws.append(["日期", "班次", "平台", "充值", "支出", "净营业"])
 
     stmt = select(DailySummary).where(DailySummary.bill_date >= start_date, DailySummary.bill_date <= end_date)
+    if allowed is not None:
+        stmt = stmt.where(DailySummary.platform_id.in_(allowed))
     if shift_id:
         stmt = stmt.where(DailySummary.shift_id == shift_id)
     if platform_id:
@@ -103,6 +119,8 @@ def export_report_query_excel(
         Transaction.type == "expense",
         Transaction.deleted_at.is_(None),
     )
+    if allowed is not None:
+        row_expense_stmt = row_expense_stmt.where(Transaction.platform_id.in_(allowed))
     if shift_id:
         row_expense_stmt = row_expense_stmt.where(Transaction.shift_id == shift_id)
     if platform_id:
@@ -156,6 +174,7 @@ def export_report_query_excel(
                 Transaction.payment_method_id == pm.id,
                 Transaction.bill_date < end_date,
                 Transaction.deleted_at.is_(None),
+                Transaction.platform_id.in_(allowed) if allowed is not None else True,
             )
             .group_by(Transaction.type)
         ).all()
@@ -173,6 +192,7 @@ def export_report_query_excel(
                 Transaction.bill_date >= start_date,
                 Transaction.bill_date <= end_date,
                 Transaction.deleted_at.is_(None),
+                Transaction.platform_id.in_(allowed) if allowed is not None else True,
             )
             .group_by(Transaction.type)
         ).all()
@@ -207,15 +227,18 @@ def export_report_query_excel(
 def export_handover_excel(
     bill_date: str,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.query")),
+    current_user: User = Depends(require_module("reports.query")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        allowed = [-1]
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "交班营业"
     ws1.append(["日期", "班次", "充值", "支出", "营业额"])
     shift_rows = db.execute(
         select(DailySummary.shift_id, func.sum(DailySummary.total_income), func.sum(DailySummary.total_expense), func.sum(DailySummary.net_profit))
-        .where(DailySummary.bill_date == bill_date)
+        .where(DailySummary.bill_date == bill_date, DailySummary.platform_id.in_(allowed) if allowed is not None else True)
         .group_by(DailySummary.shift_id)
         .order_by(DailySummary.shift_id.asc())
     ).all()
@@ -230,6 +253,7 @@ def export_handover_excel(
         before_row = db.execute(
             select(func.sum(Transaction.amount), Transaction.type)
             .where(Transaction.payment_method_id == pm.id, Transaction.bill_date < bill_date, Transaction.deleted_at.is_(None))
+            .where(Transaction.platform_id.in_(allowed) if allowed is not None else True)
             .group_by(Transaction.type)
         ).all()
         opening = float(pm.initial_balance or 0)
@@ -241,6 +265,7 @@ def export_handover_excel(
         day_row = db.execute(
             select(func.sum(Transaction.amount), Transaction.type)
             .where(Transaction.payment_method_id == pm.id, Transaction.bill_date == bill_date, Transaction.deleted_at.is_(None))
+            .where(Transaction.platform_id.in_(allowed) if allowed is not None else True)
             .group_by(Transaction.type)
         ).all()
         recharge = 0.0
@@ -269,8 +294,11 @@ def export_excel(
     year: int,
     month: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("reports.monthly")),
+    current_user: User = Depends(require_module("reports.monthly")),
 ):
+    allowed = _scoped_platform_ids(db, current_user)
+    if allowed == []:
+        allowed = [-1]
     wb = Workbook()
 
     ws_tx = wb.active
@@ -281,6 +309,7 @@ def export_excel(
             extract("year", Transaction.bill_date) == year,
             extract("month", Transaction.bill_date) == month,
             Transaction.deleted_at.is_(None),
+            Transaction.platform_id.in_(allowed) if allowed is not None else True,
         )
     ).scalars().all()
     for tx in tx_rows:
@@ -304,6 +333,7 @@ def export_excel(
         select(DailySummary).where(
             extract("year", DailySummary.bill_date) == year,
             extract("month", DailySummary.bill_date) == month,
+            DailySummary.platform_id.in_(allowed) if allowed is not None else True,
         )
     ).scalars().all()
     for row in daily_rows:
@@ -342,8 +372,14 @@ def export_excel(
 
     ws_month = wb.create_sheet("月度汇总")
     ws_month.append(["月份", "总收入", "总支出", "净盈利"])
-    monthly = get_monthly_summary(db, year, month)
-    ws_month.append([f"{year:04d}-{month:02d}", float(monthly["total_income"]), float(monthly["total_expense"]), float(monthly["net_profit"])])
+    monthly_row = db.execute(
+        select(func.sum(DailySummary.total_income), func.sum(DailySummary.total_expense), func.sum(DailySummary.net_profit)).where(
+            extract("year", DailySummary.bill_date) == year,
+            extract("month", DailySummary.bill_date) == month,
+            DailySummary.platform_id.in_(allowed) if allowed is not None else True,
+        )
+    ).first()
+    ws_month.append([f"{year:04d}-{month:02d}", float(monthly_row[0] or 0), float(monthly_row[1] or 0), float(monthly_row[2] or 0)])
     apply_money_format(ws_month, [2, 3, 4])
 
     ws_platform = wb.create_sheet("平台汇总")
@@ -353,6 +389,7 @@ def export_excel(
             extract("year", Transaction.bill_date) == year,
             extract("month", Transaction.bill_date) == month,
             Transaction.deleted_at.is_(None),
+            Transaction.platform_id.in_(allowed) if allowed is not None else True,
         )
     ).all()
     plat_data: dict[int, dict[str, float]] = {}
@@ -374,6 +411,7 @@ def export_excel(
             extract("year", Transaction.bill_date) == year,
             extract("month", Transaction.bill_date) == month,
             Transaction.deleted_at.is_(None),
+            Transaction.platform_id.in_(allowed) if allowed is not None else True,
         ).group_by(Transaction.category_id, Transaction.type)
     ).all()
     for r in project_rows:
@@ -390,6 +428,74 @@ def export_excel(
     wb.save(output)
     output.seek(0)
     filename = f"accounting-{year:04d}-{month:02d}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/super-tenant-summary-excel")
+def export_super_tenant_summary_excel(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    tenant_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles({UserRole.SUPER_ADMIN.value, UserRole.PLATFORM_VIEWER.value})),
+):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "租户汇总"
+    ws.append(["租户ID", "租户名称", "总收入", "总支出", "净利润"])
+
+    stmt = (
+        select(
+            Tenant.id,
+            Tenant.name,
+            func.sum(DailySummary.total_income),
+            func.sum(DailySummary.total_expense),
+            func.sum(DailySummary.net_profit),
+        )
+        .select_from(Tenant)
+        .join(TenantPlatformAccess, TenantPlatformAccess.tenant_id == Tenant.id)
+        .join(DailySummary, DailySummary.platform_id == TenantPlatformAccess.platform_id)
+    )
+    if start_date:
+        stmt = stmt.where(DailySummary.bill_date >= start_date)
+    if end_date:
+        stmt = stmt.where(DailySummary.bill_date <= end_date)
+    if tenant_id:
+        stmt = stmt.where(Tenant.id == tenant_id)
+    rows = db.execute(stmt.group_by(Tenant.id, Tenant.name).order_by(Tenant.id.asc())).all()
+
+    total_income = 0.0
+    total_expense = 0.0
+    total_net = 0.0
+    for r in rows:
+        income = float(r[2] or 0)
+        expense = float(r[3] or 0)
+        net = float(r[4] or 0)
+        total_income += income
+        total_expense += expense
+        total_net += net
+        ws.append([int(r[0]), r[1], income, expense, net])
+
+    ws.append(["总计", "-", total_income, total_expense, total_net])
+    apply_money_format(ws, [3, 4, 5])
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    filename = "super-tenant-summary.xlsx"
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            module="exports",
+            action="export_super_tenant_summary_excel",
+            after_data=f"start_date={start_date},end_date={end_date},tenant_id={tenant_id}",
+        )
+    )
+    db.commit()
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

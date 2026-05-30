@@ -90,8 +90,39 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     role: str
+    tenant_id: int | None = None
+    tenant_name: str | None = None
+    tenant_expire_at: str | None = None
     platform_id: int | None = None
     platform_ids: list[int] = Field(default_factory=list)
+
+
+class TenantCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    status: str = "enabled"
+    admin_username: str | None = None
+    admin_password: str | None = None
+    admin_expire_at: str | None = None
+
+
+class TenantUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    status: str = "enabled"
+    admin_username: str | None = None
+    admin_password: str | None = None
+    admin_expire_at: str | None = None
+
+
+class TenantAccessUpdate(BaseModel):
+    expire_at: str | None = None
+    status: str = "enabled"
+
+
+class TenantAdminCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=50)
+    password: str = Field(min_length=6, max_length=100)
+    status: str = "enabled"
+    expire_at: str | None = None
 
 
 class AccountCreate(BaseModel):

@@ -25,6 +25,35 @@ class User(Base, TimestampMixin):
     platform_id: Mapped[int | None] = mapped_column(ForeignKey("platforms.id"), nullable=True, index=True)
 
 
+class Tenant(Base, TimestampMixin):
+    __tablename__ = "tenants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default=GenericStatus.ENABLED.value)
+
+
+class UserTenantAccess(Base):
+    __tablename__ = "user_tenant_access"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default=GenericStatus.ENABLED.value)
+    expire_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now, onupdate=beijing_now)
+
+
+class TenantPlatformAccess(Base):
+    __tablename__ = "tenant_platform_access"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    platform_id: Mapped[int] = mapped_column(ForeignKey("platforms.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
+
+
 class UserPlatformAccess(Base):
     __tablename__ = "user_platform_access"
 
@@ -170,6 +199,23 @@ class AuditLog(Base):
     before_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     after_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     ip: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
+
+
+class OperationLog(Base):
+    __tablename__ = "operation_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)
+    username: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    method: Mapped[str] = mapped_column(String(10))
+    path: Mapped[str] = mapped_column(String(255))
+    query_string: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_code: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    ip: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
 
 

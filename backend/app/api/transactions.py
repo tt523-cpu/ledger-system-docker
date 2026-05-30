@@ -3,11 +3,11 @@ from uuid import uuid4
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_user_platform_ids, require_roles
+from app.core.deps import get_accessible_platform_ids, get_user_platform_ids, require_roles
 from app.models.entities import AuditLog, Category, EntryType, EntryTypeSetting, Transaction, User
 from app.models.enums import TransactionType, UserRole
 from app.schemas.common import BatchTransactionCreate, OffsetTransactionCreate
@@ -88,7 +88,7 @@ def create_batch_transactions(
         raise HTTPException(status_code=423, detail=str(exc)) from exc
 
     if current_user.role == UserRole.BOOKKEEPER.value:
-        platform_ids = get_user_platform_ids(db, current_user)
+        platform_ids = get_accessible_platform_ids(db, current_user)
         if not platform_ids:
             raise HTTPException(status_code=400, detail="bookkeeper has no platform binding")
         if payload.platform_id is None:
@@ -100,6 +100,10 @@ def create_batch_transactions(
     else:
         if payload.platform_id is None:
             raise HTTPException(status_code=400, detail="platform_id is required")
+        if current_user.role != UserRole.SUPER_ADMIN.value:
+            allowed = set(get_accessible_platform_ids(db, current_user))
+            if payload.platform_id not in allowed:
+                raise HTTPException(status_code=403, detail="no permission for selected platform")
         effective_platform_id = payload.platform_id
 
     biz_group_no = uuid4().hex[:16]
@@ -173,42 +177,96 @@ def list_transactions(
 ):
     stmt = select(Transaction).where(Transaction.deleted_at.is_(None))
     count_stmt = select(func.count(Transaction.id)).where(Transaction.deleted_at.is_(None))
+    summary_stmt = select(
+        func.sum(case((Transaction.type == "expense", Transaction.amount), else_=0)),
+        func.sum(case((Transaction.biz_type_label == "充值", Transaction.amount), else_=0)),
+        func.sum(case((Transaction.biz_type_label == "兑奖", Transaction.amount), else_=0)),
+    ).where(Transaction.deleted_at.is_(None))
+    expense_detail_stmt = select(
+        Transaction.category_id,
+        Transaction.biz_type_label,
+        func.sum(Transaction.amount),
+    ).where(Transaction.deleted_at.is_(None), Transaction.type == "expense")
     if bill_date:
         stmt = stmt.where(Transaction.bill_date == bill_date)
         count_stmt = count_stmt.where(Transaction.bill_date == bill_date)
+        summary_stmt = summary_stmt.where(Transaction.bill_date == bill_date)
+        expense_detail_stmt = expense_detail_stmt.where(Transaction.bill_date == bill_date)
     else:
         if start_date:
             stmt = stmt.where(Transaction.bill_date >= start_date)
             count_stmt = count_stmt.where(Transaction.bill_date >= start_date)
+            summary_stmt = summary_stmt.where(Transaction.bill_date >= start_date)
+            expense_detail_stmt = expense_detail_stmt.where(Transaction.bill_date >= start_date)
         if end_date:
             stmt = stmt.where(Transaction.bill_date <= end_date)
             count_stmt = count_stmt.where(Transaction.bill_date <= end_date)
+            summary_stmt = summary_stmt.where(Transaction.bill_date <= end_date)
+            expense_detail_stmt = expense_detail_stmt.where(Transaction.bill_date <= end_date)
     if shift_id:
         stmt = stmt.where(Transaction.shift_id == shift_id)
         count_stmt = count_stmt.where(Transaction.shift_id == shift_id)
+        summary_stmt = summary_stmt.where(Transaction.shift_id == shift_id)
+        expense_detail_stmt = expense_detail_stmt.where(Transaction.shift_id == shift_id)
     if platform_id:
         stmt = stmt.where(Transaction.platform_id == platform_id)
         count_stmt = count_stmt.where(Transaction.platform_id == platform_id)
-    if current_user.role in {UserRole.BOOKKEEPER.value, UserRole.VIEWER.value}:
-        platform_ids = get_user_platform_ids(db, current_user)
+        summary_stmt = summary_stmt.where(Transaction.platform_id == platform_id)
+        expense_detail_stmt = expense_detail_stmt.where(Transaction.platform_id == platform_id)
+    if current_user.role in {UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value}:
+        platform_ids = get_accessible_platform_ids(db, current_user)
         if platform_ids:
             stmt = stmt.where(Transaction.platform_id.in_(platform_ids))
             count_stmt = count_stmt.where(Transaction.platform_id.in_(platform_ids))
+            summary_stmt = summary_stmt.where(Transaction.platform_id.in_(platform_ids))
+            expense_detail_stmt = expense_detail_stmt.where(Transaction.platform_id.in_(platform_ids))
+        elif current_user.role != UserRole.SUPER_ADMIN.value:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "summary": {"expense": 0, "recharge": 0, "redeem": 0},
+            }
     if tx_type:
         stmt = stmt.where(Transaction.type == tx_type)
         count_stmt = count_stmt.where(Transaction.type == tx_type)
+        summary_stmt = summary_stmt.where(Transaction.type == tx_type)
+        expense_detail_stmt = expense_detail_stmt.where(Transaction.type == tx_type)
     if category_id:
         stmt = stmt.where(Transaction.category_id == category_id)
         count_stmt = count_stmt.where(Transaction.category_id == category_id)
+        summary_stmt = summary_stmt.where(Transaction.category_id == category_id)
+        expense_detail_stmt = expense_detail_stmt.where(Transaction.category_id == category_id)
     if keyword:
         stmt = stmt.where(Transaction.remark.like(f"%{keyword}%"))
         count_stmt = count_stmt.where(Transaction.remark.like(f"%{keyword}%"))
+        summary_stmt = summary_stmt.where(Transaction.remark.like(f"%{keyword}%"))
+        expense_detail_stmt = expense_detail_stmt.where(Transaction.remark.like(f"%{keyword}%"))
 
     total = db.execute(count_stmt).scalar_one()
     rows = db.execute(
         stmt.order_by(Transaction.id.desc()).offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
-    return {"items": rows, "total": total, "page": page, "page_size": page_size}
+    summary_row = db.execute(summary_stmt).first()
+    expense_rows = db.execute(expense_detail_stmt.group_by(Transaction.category_id, Transaction.biz_type_label)).all()
+    category_map = {c.id: c.name for c in db.execute(select(Category)).scalars().all()}
+    expense_detail = "，".join(
+        f"{(category_map.get(r[0], f'项目#{r[0]}') if r[0] is not None else ((r[1] or '-').strip() or '-'))}:{float(r[2] or 0):.2f}"
+        for r in expense_rows
+    )
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "summary": {
+            "expense": float(summary_row[0] or 0),
+            "recharge": float(summary_row[1] or 0),
+            "redeem": float(summary_row[2] or 0),
+            "expense_detail": expense_detail,
+        },
+    }
 
 
 @router.put("/{tx_id}")
@@ -223,9 +281,13 @@ def update_transaction(
         raise HTTPException(status_code=404, detail="transaction not found")
 
     if current_user.role == UserRole.BOOKKEEPER.value:
-        platform_ids = get_user_platform_ids(db, current_user)
+        platform_ids = get_accessible_platform_ids(db, current_user)
         if tx.platform_id not in platform_ids:
             raise HTTPException(status_code=403, detail="bookkeeper can only edit own platform transactions")
+    elif current_user.role != UserRole.SUPER_ADMIN.value:
+        allowed = set(get_accessible_platform_ids(db, current_user))
+        if tx.platform_id not in allowed:
+            raise HTTPException(status_code=403, detail="no permission for this transaction")
 
     old_bill_date = tx.bill_date
     old_shift_id = tx.shift_id
@@ -294,9 +356,13 @@ def soft_delete_transaction(
         raise HTTPException(status_code=404, detail="transaction not found")
 
     if current_user.role == UserRole.BOOKKEEPER.value:
-        platform_ids = get_user_platform_ids(db, current_user)
+        platform_ids = get_accessible_platform_ids(db, current_user)
         if tx.platform_id not in platform_ids:
             raise HTTPException(status_code=403, detail="bookkeeper can only delete own platform transactions")
+    elif current_user.role != UserRole.SUPER_ADMIN.value:
+        allowed = set(get_accessible_platform_ids(db, current_user))
+        if tx.platform_id not in allowed:
+            raise HTTPException(status_code=403, detail="no permission for this transaction")
     try:
         assert_month_not_locked(db, tx.bill_date)
     except ValueError as exc:
@@ -325,7 +391,7 @@ def create_offset_transactions(
     current_user: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value})),
 ):
     if current_user.role == UserRole.BOOKKEEPER.value:
-        platform_ids = get_user_platform_ids(db, current_user)
+        platform_ids = get_accessible_platform_ids(db, current_user)
         if not platform_ids:
             raise HTTPException(status_code=400, detail="bookkeeper has no platform binding")
         if payload.platform_id is None:
@@ -337,6 +403,10 @@ def create_offset_transactions(
     else:
         if payload.platform_id is None:
             raise HTTPException(status_code=400, detail="platform_id is required")
+        if current_user.role != UserRole.SUPER_ADMIN.value:
+            allowed = set(get_accessible_platform_ids(db, current_user))
+            if payload.platform_id not in allowed:
+                raise HTTPException(status_code=403, detail="no permission for selected platform")
         effective_platform_id = payload.platform_id
     try:
         assert_month_not_locked(db, payload.bill_date)

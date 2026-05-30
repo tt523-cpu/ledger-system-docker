@@ -1,4 +1,5 @@
 <script setup>
+import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
@@ -19,16 +20,24 @@ const menus = [
   { path: '/master/entry-types', label: '类型管理', moduleKey: 'master.entry_types' },
   { path: '/master/shifts', label: '班次管理', moduleKey: 'master.shifts' },
   { path: '/master/users', label: '用户管理', moduleKey: 'master.users' },
-  { path: '/logs', label: '修改日志', moduleKey: 'logs' },
+  { path: '/master/tenants', label: '租户管理', moduleKey: 'master.tenants' },
+  { path: '/log-center', label: '日志中心', moduleKey: 'logs' },
   { path: '/system/tools', label: '系统工具', moduleKey: 'system.tools' },
 ]
 
-const visibleMenus = menus.filter((m) => auth.moduleKeys.includes(m.moduleKey))
+const visibleMenus = menus.filter((m) => {
+  if (m.moduleKey === 'master.tenants') return false
+  return auth.moduleKeys.includes(m.moduleKey)
+})
 
 function logout() {
   auth.logout()
   router.push('/login')
 }
+
+onMounted(() => {
+  auth.syncProfile().catch(() => {})
+})
 </script>
 
 <template>
@@ -41,7 +50,7 @@ function logout() {
     </aside>
     <main class="main">
       <div class="topbar">
-        <span>当前用户：{{ auth.username }}</span>
+        <span>当前用户：{{ auth.username }}<template v-if="auth.tenantName"> ｜ 租户：{{ auth.tenantName }}</template></span>
         <el-button size="small" @click="logout">退出</el-button>
       </div>
       <router-view />

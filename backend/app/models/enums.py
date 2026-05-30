@@ -2,6 +2,8 @@ from enum import StrEnum
 
 
 class UserRole(StrEnum):
+    SUPER_ADMIN = "super_admin"
+    PLATFORM_VIEWER = "platform_viewer"
     ADMIN = "admin"
     BOOKKEEPER = "bookkeeper"
     VIEWER = "viewer"
