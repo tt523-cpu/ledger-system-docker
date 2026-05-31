@@ -144,6 +144,12 @@ alembic -c alembic.ini stamp 20260529_0001
 
 ## Docker 正式部署
 
+可直接使用一键初始化脚本：`scripts/install_fresh_server.sh`
+
+```bash
+bash scripts/install_fresh_server.sh
+```
+
 ### 1) 准备生产环境变量
 
 在项目根目录复制一份：
