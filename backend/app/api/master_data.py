@@ -656,9 +656,7 @@ def delete_entry_type(
     ref_count = db.execute(ref_stmt).scalar_one()
     if ref_count > 0:
         raise HTTPException(status_code=400, detail="该类型已被历史数据引用，不能删除")
-    setting = db.execute(select(EntryTypeSetting).where(EntryTypeSetting.entry_type_id == obj.id)).scalar_one_or_none()
-    if setting is not None:
-        db.delete(setting)
+    db.execute(EntryTypeSetting.__table__.delete().where(EntryTypeSetting.entry_type_id == obj.id))
     db.delete(obj)
     db.commit()
     return {"ok": True}
