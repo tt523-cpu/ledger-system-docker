@@ -2,6 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -656,10 +657,16 @@ def delete_entry_type(
     ref_count = db.execute(ref_stmt).scalar_one()
     if ref_count > 0:
         raise HTTPException(status_code=400, detail="该类型已被历史数据引用，不能删除")
-    db.execute(EntryTypeSetting.__table__.delete().where(EntryTypeSetting.entry_type_id == obj.id))
-    db.delete(obj)
-    db.commit()
-    return {"ok": True}
+    try:
+        db.execute(EntryTypeSetting.__table__.delete().where(EntryTypeSetting.entry_type_id == obj.id))
+        deleted = db.execute(EntryType.__table__.delete().where(EntryType.id == obj.id)).rowcount or 0
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="该类型已被历史数据引用，不能删除")
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="entry type not found")
+    return {"ok": True, "deleted": deleted}
 
 
 @router.get("/categories")
