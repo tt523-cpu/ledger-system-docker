@@ -167,8 +167,10 @@ docker compose --env-file .env.prod up -d --build
 ```bash
 git pull --ff-only origin main
 docker compose --env-file .env.prod up -d --build
-docker compose --env-file .env.prod exec -T backend alembic upgrade head
+docker compose --env-file .env.prod exec -T backend sh -lc 'cd /app && alembic -c alembic.ini upgrade head'
 ```
+
+如果提示 `No config file 'alembic.ini' found`，通常是旧镜像未包含 Alembic 文件；拉取最新代码并 `--build` 重建后再执行上面的命令。
 
 ### 4) 后续更新（仅拉镜像）
 
