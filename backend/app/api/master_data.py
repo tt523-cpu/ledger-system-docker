@@ -1108,7 +1108,19 @@ def list_super_users(
         .where(User.role.in_([UserRole.SUPER_ADMIN.value, UserRole.PLATFORM_VIEWER.value]))
         .order_by(User.id.asc())
     ).scalars().all()
-    return [{"id": u.id, "username": u.username, "role": u.role, "status": u.status} for u in rows]
+    tenant_map: dict[int, list[int]] = {}
+    for uid, tid in db.execute(select(UserTenantAccess.user_id, UserTenantAccess.tenant_id)).all():
+        tenant_map.setdefault(int(uid), []).append(int(tid))
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "role": u.role,
+            "status": u.status,
+            "tenant_ids": sorted(set(tenant_map.get(u.id, []))),
+        }
+        for u in rows
+    ]
 
 
 @router.post("/super-users")
@@ -1116,6 +1128,7 @@ def create_super_user(
     username: str,
     password: str,
     role: str,
+    tenant_ids: str | None = None,
     status: str = "enabled",
     db: Session = Depends(get_db),
     _: User = Depends(require_roles({UserRole.SUPER_ADMIN.value})),
@@ -1129,6 +1142,13 @@ def create_super_user(
         raise HTTPException(status_code=400, detail="username exists")
     u = User(username=username, password_hash=get_password_hash(password), role=role, status=status)
     db.add(u)
+    db.flush()
+    if role == UserRole.PLATFORM_VIEWER.value:
+        parsed_tenant_ids = sorted(set(int(x) for x in (tenant_ids or "").split(",") if x.strip().isdigit()))
+        for tid in parsed_tenant_ids:
+            tenant = db.get(Tenant, tid)
+            if tenant is not None:
+                db.add(UserTenantAccess(user_id=u.id, tenant_id=tid, status="enabled", expire_at=None))
     db.commit()
     db.refresh(u)
     return {"id": u.id, "username": u.username, "role": u.role, "status": u.status}
@@ -1139,6 +1159,7 @@ def update_super_user(
     user_id: int,
     role: str,
     status: str,
+    tenant_ids: str | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_roles({UserRole.SUPER_ADMIN.value})),
 ):
@@ -1151,6 +1172,12 @@ def update_super_user(
     u.status = status
     db.execute(UserTenantAccess.__table__.delete().where(UserTenantAccess.user_id == u.id))
     db.execute(UserPlatformAccess.__table__.delete().where(UserPlatformAccess.user_id == u.id))
+    if role == UserRole.PLATFORM_VIEWER.value:
+        parsed_tenant_ids = sorted(set(int(x) for x in (tenant_ids or "").split(",") if x.strip().isdigit()))
+        for tid in parsed_tenant_ids:
+            tenant = db.get(Tenant, tid)
+            if tenant is not None:
+                db.add(UserTenantAccess(user_id=u.id, tenant_id=tid, status="enabled", expire_at=None))
     db.commit()
     return {"ok": True}
 

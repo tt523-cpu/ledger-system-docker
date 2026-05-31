@@ -87,6 +87,11 @@ def get_accessible_platform_ids(db: Session, user: User) -> list[int]:
     if user.role == UserRole.SUPER_ADMIN.value:
         return []
     if user.role == UserRole.PLATFORM_VIEWER.value:
+        tenant_rows = db.execute(select(UserTenantAccess.tenant_id).where(UserTenantAccess.user_id == user.id)).all()
+        tenant_ids = [int(r[0]) for r in tenant_rows]
+        if tenant_ids:
+            rows = db.execute(select(TenantPlatformAccess.platform_id).where(TenantPlatformAccess.tenant_id.in_(tenant_ids))).all()
+            return sorted(set(int(r[0]) for r in rows))
         rows = db.execute(select(Platform.id)).all()
         return sorted(int(r[0]) for r in rows)
     tenant_access = get_user_tenant_access(db, user)

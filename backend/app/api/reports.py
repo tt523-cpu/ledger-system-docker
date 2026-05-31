@@ -29,7 +29,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 
 def _scoped_platform_ids(db: Session, current_user: User) -> list[int] | None:
-    if current_user.role in {UserRole.SUPER_ADMIN.value, UserRole.PLATFORM_VIEWER.value}:
+    if current_user.role == UserRole.SUPER_ADMIN.value:
         return None
     return get_accessible_platform_ids(db, current_user)
 

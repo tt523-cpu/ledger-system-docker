@@ -3,8 +3,9 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
 
-const form = reactive({ username: '', password: '', role: 'platform_viewer', status: 'enabled' })
+const form = reactive({ username: '', password: '', role: 'platform_viewer', status: 'enabled', tenant_ids: [] })
 const users = ref([])
+const tenants = ref([])
 const moduleOptions = [
   { key: 'master.tenants', label: '租户管理', module_keys: ['master.tenants'] },
   { key: 'super.users', label: '后台用户', module_keys: ['super.users'] },
@@ -31,8 +32,9 @@ function toModuleKeys(flags) {
 }
 
 async function load() {
-  const [u, rp] = await Promise.all([http.get('/master/super-users'), http.get('/master/role-permissions')])
-  users.value = u.data || []
+  const [u, rp, t] = await Promise.all([http.get('/master/super-users'), http.get('/master/role-permissions'), http.get('/master/tenants')])
+  users.value = (u.data || []).map((x) => ({ ...x, tenant_ids: x.tenant_ids || [] }))
+  tenants.value = t.data || []
   roleModuleFlags.super_admin = toFlags(rp.data?.role_modules?.super_admin || [])
   roleModuleFlags.platform_viewer = toFlags(rp.data?.role_modules?.platform_viewer || [])
 }
@@ -44,17 +46,18 @@ async function saveRoleModules(role) {
 }
 
 async function createUser() {
-  await http.post('/master/super-users', null, { params: { ...form } })
+  await http.post('/master/super-users', null, { params: { ...form, tenant_ids: (form.tenant_ids || []).join(',') } })
   ElMessage.success('新增成功')
   form.username = ''
   form.password = ''
   form.role = 'platform_viewer'
   form.status = 'enabled'
+  form.tenant_ids = []
   await load()
 }
 
 async function saveUser(row) {
-  await http.put(`/master/super-users/${row.id}`, null, { params: { role: row.role, status: row.status } })
+  await http.put(`/master/super-users/${row.id}`, null, { params: { role: row.role, status: row.status, tenant_ids: (row.tenant_ids || []).join(',') } })
   ElMessage.success('保存成功')
   await load()
 }
@@ -97,6 +100,11 @@ onMounted(load)
           <el-option value="super_admin" label="超级管理员" />
         </el-select>
       </el-form-item>
+      <el-form-item v-if="form.role === 'platform_viewer'" label="可见租户">
+        <el-select v-model="form.tenant_ids" multiple clearable style="width: 260px" placeholder="不选=可看全部租户">
+          <el-option v-for="t in tenants" :key="t.id" :value="t.id" :label="t.name" />
+        </el-select>
+      </el-form-item>
       <el-button type="primary" @click="createUser">新增用户</el-button>
     </el-form>
 
@@ -117,6 +125,14 @@ onMounted(load)
             <el-option value="enabled" label="启用" />
             <el-option value="disabled" label="停用" />
           </el-select>
+        </template>
+      </el-table-column>
+      <el-table-column label="可见租户" width="280">
+        <template #default="{ row }">
+          <el-select v-if="row.role === 'platform_viewer'" v-model="row.tenant_ids" multiple clearable style="width: 260px" placeholder="不选=可看全部租户">
+            <el-option v-for="t in tenants" :key="`u-${row.id}-t-${t.id}`" :value="t.id" :label="t.name" />
+          </el-select>
+          <span v-else>-</span>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="260">
