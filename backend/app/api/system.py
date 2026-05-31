@@ -75,6 +75,7 @@ def _sanitize_user_fk_rows(tables: dict):
         "transactions.operator_id": 0,
         "month_locks.locked_by": 0,
         "audit_logs.user_id": 0,
+        "operation_logs.user_id": 0,
     }
 
     tx_rows = tables.get("transactions", [])
@@ -106,6 +107,16 @@ def _sanitize_user_fk_rows(tables: dict):
             if user_id is not None and user_id not in user_ids:
                 row["user_id"] = fallback_user_id
                 fixed_counts["audit_logs.user_id"] += 1
+
+    op_rows = tables.get("operation_logs", [])
+    if isinstance(op_rows, list):
+        for row in op_rows:
+            if not isinstance(row, dict):
+                continue
+            user_id = row.get("user_id")
+            if user_id is not None and user_id not in user_ids:
+                row["user_id"] = fallback_user_id
+                fixed_counts["operation_logs.user_id"] += 1
 
     return {k: v for k, v in fixed_counts.items() if v > 0}
 
