@@ -1,14 +1,24 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import * as echarts from 'echarts'
 import http from '../api/http'
 
 const data = ref({ today: {}, month: {}, trend7: [] })
+let chart = null
+
+async function getEcharts() {
+  const mod = await import('echarts')
+  return mod
+}
 
 async function load() {
   const res = await http.get('/reports/dashboard')
   data.value = res.data
-  const chart = echarts.init(document.getElementById('trend7'))
+  const echarts = await getEcharts()
+  const el = document.getElementById('trend7')
+  if (!el) return
+  if (!chart) {
+    chart = echarts.init(el)
+  }
   chart.setOption({
     tooltip: { trigger: 'axis' },
     legend: { data: ['充值', '支出', '净营业'] },

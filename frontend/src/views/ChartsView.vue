@@ -1,10 +1,16 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import * as echarts from 'echarts'
 import http from '../api/http'
 
 const selectedPlatformId = ref('all')
 const platforms = ref([])
+let trendChart = null
+let platformChart = null
+
+async function getEcharts() {
+  const mod = await import('echarts')
+  return mod
+}
 
 async function loadPlatforms() {
   const { data } = await http.get('/master/platforms')
@@ -15,9 +21,14 @@ async function load() {
   const params = { platform_id: selectedPlatformId.value === 'all' ? undefined : Number(selectedPlatformId.value) }
   const trend = await http.get('/system/charts/income-expense-trend', { params })
   const plat = await http.get('/system/charts/profit-by-platform', { params })
+  const echarts = await getEcharts()
 
-  const t = echarts.init(document.getElementById('trend'))
-  t.setOption({
+  const trendEl = document.getElementById('trend')
+  if (!trendEl) return
+  if (!trendChart) {
+    trendChart = echarts.init(trendEl)
+  }
+  trendChart.setOption({
     tooltip: { trigger: 'axis' },
     xAxis: { type: 'category', data: trend.data.map((i) => i.date) },
     yAxis: { type: 'value' },
@@ -28,8 +39,12 @@ async function load() {
     ],
   })
 
-  const p = echarts.init(document.getElementById('platform'))
-  p.setOption({
+  const platformEl = document.getElementById('platform')
+  if (!platformEl) return
+  if (!platformChart) {
+    platformChart = echarts.init(platformEl)
+  }
+  platformChart.setOption({
     xAxis: { type: 'category', data: plat.data.map((i) => i.platform_name) },
     yAxis: { type: 'value' },
     series: [{ type: 'bar', data: plat.data.map((i) => i.net) }],

@@ -237,6 +237,82 @@ def update_tenant(
     }
 
 
+@router.delete("/tenants/{tenant_id}")
+def delete_tenant(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_module("master.tenants", {UserRole.SUPER_ADMIN.value})),
+):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    platform_ids = [
+        int(r[0]) for r in db.execute(select(Platform.id).where(Platform.tenant_id == tenant_id)).all()
+    ]
+    checks = {
+        "platforms": db.execute(select(func.count(Platform.id)).where(Platform.tenant_id == tenant_id)).scalar_one(),
+        "shifts": db.execute(select(func.count(Shift.id)).where(Shift.tenant_id == tenant_id)).scalar_one(),
+        "accounts": db.execute(select(func.count(Account.id)).where(Account.tenant_id == tenant_id)).scalar_one(),
+        "payment_methods": db.execute(select(func.count(PaymentMethod.id)).where(PaymentMethod.tenant_id == tenant_id)).scalar_one(),
+        "categories": db.execute(select(func.count(Category.id)).where(Category.tenant_id == tenant_id)).scalar_one(),
+        "entry_types": db.execute(select(func.count(EntryType.id)).where(EntryType.tenant_id == tenant_id)).scalar_one(),
+        "transactions": db.execute(
+            select(func.count(Transaction.id)).where(Transaction.platform_id.in_(platform_ids) if platform_ids else False)
+        ).scalar_one(),
+        "daily_summaries": db.execute(
+            select(func.count(DailySummary.id)).where(DailySummary.platform_id.in_(platform_ids) if platform_ids else False)
+        ).scalar_one(),
+        "account_snapshots": db.execute(
+            select(func.count(AccountSnapshot.id)).where(AccountSnapshot.account_id.in_(
+                select(Account.id).where(Account.tenant_id == tenant_id)
+            ))
+        ).scalar_one(),
+        "handover_payment_snapshots": db.execute(
+            select(func.count(HandoverPaymentSnapshot.id)).where(
+                HandoverPaymentSnapshot.payment_method_id.in_(
+                    select(PaymentMethod.id).where(PaymentMethod.tenant_id == tenant_id)
+                )
+            )
+        ).scalar_one(),
+    }
+    blocking = {k: int(v) for k, v in checks.items() if int(v) > 0}
+    if blocking:
+        detail = "该租户存在业务数据，不能删除：" + ", ".join([f"{k}={v}" for k, v in blocking.items()])
+        raise HTTPException(status_code=400, detail=detail)
+
+    bound_user_ids = [
+        int(r[0]) for r in db.execute(select(UserTenantAccess.user_id).where(UserTenantAccess.tenant_id == tenant_id)).all()
+    ]
+    db.execute(UserTenantAccess.__table__.delete().where(UserTenantAccess.tenant_id == tenant_id))
+    db.execute(TenantPlatformAccess.__table__.delete().where(TenantPlatformAccess.tenant_id == tenant_id))
+
+    deleted_users = 0
+    for user_id in bound_user_ids:
+        still_bound = db.execute(select(func.count(UserTenantAccess.id)).where(UserTenantAccess.user_id == user_id)).scalar_one()
+        if int(still_bound) > 0:
+            continue
+        user = db.get(User, user_id)
+        if user is None or user.role == UserRole.SUPER_ADMIN.value:
+            continue
+        db.execute(UserPlatformAccess.__table__.delete().where(UserPlatformAccess.user_id == user_id))
+        db.delete(user)
+        deleted_users += 1
+
+    db.delete(tenant)
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            module="tenants",
+            action="delete_tenant",
+            before_data=f"tenant_id={tenant_id},name={tenant.name}",
+            after_data=f"deleted_users={deleted_users}",
+        )
+    )
+    db.commit()
+    return {"ok": True, "deleted_users": deleted_users}
+
+
 @router.put("/users/{user_id}/tenant-access")
 def update_user_tenant_access(
     user_id: int,

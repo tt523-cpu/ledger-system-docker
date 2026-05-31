@@ -59,10 +59,15 @@ async function saveEdit(id) {
 }
 
 async function removeRow(id) {
-  await ElMessageBox.confirm('确认删除该录入类型吗？', '提示', { type: 'warning' })
-  await http.delete(`/master/entry-types/${id}`)
-  ElMessage.success('删除成功')
-  await load()
+  try {
+    await ElMessageBox.confirm('确认删除该录入类型吗？', '提示', { type: 'warning' })
+    await http.delete(`/master/entry-types/${id}`)
+    ElMessage.success('删除成功')
+    await load()
+  } catch (err) {
+    if (err === 'cancel') return
+    ElMessage.error(err?.response?.data?.detail || '删除失败')
+  }
 }
 
 onMounted(load)

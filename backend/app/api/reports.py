@@ -41,8 +41,8 @@ def _tenant_select(model, tenant_id: int | None):
     return stmt
 
 
-def build_expense_items(db: Session, rows: list[tuple[int | None, str | None, float]]) -> list[dict]:
-    category_map = {c.id: c.name for c in db.execute(select(Category)).scalars().all()}
+def build_expense_items(db: Session, rows: list[tuple[int | None, str | None, float]], tenant_id: int | None) -> list[dict]:
+    category_map = {c.id: c.name for c in db.execute(_tenant_select(Category, tenant_id)).scalars().all()}
     items = []
     for category_id_val, biz_type_label_val, amount_sum in rows:
         if category_id_val is None:
@@ -644,16 +644,13 @@ def report_query(
     }
 
 
-@router.get("/payment-balances")
-def payment_balances(
+def _payment_balances_core(
     bill_date: str,
+    tenant_id: int | None,
+    allowed: list[int] | None,
     shift_id: int | None = None,
     payment_method_id: int | None = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_module("reports.balances")),
 ):
-    tenant_id = get_current_tenant_id(db, current_user)
-    allowed = _scoped_platform_ids(db, current_user)
     if allowed == []:
         return []
     stmt_methods = _tenant_select(PaymentMethod, tenant_id).where(PaymentMethod.status == "enabled")
@@ -710,7 +707,7 @@ def payment_balances(
             )
             .group_by(Transaction.category_id, Transaction.biz_type_label)
         ).all()
-        payout_items = build_expense_items(db, expense_detail_rows)
+        payout_items = build_expense_items(db, expense_detail_rows, tenant_id)
 
         closing = opening + recharge - payout
         result.append(
@@ -729,12 +726,33 @@ def payment_balances(
     return result
 
 
+@router.get("/payment-balances")
+def payment_balances(
+    bill_date: str,
+    shift_id: int | None = None,
+    payment_method_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_module("reports.balances")),
+):
+    tenant_id = get_current_tenant_id(db, current_user)
+    allowed = _scoped_platform_ids(db, current_user)
+    return _payment_balances_core(
+        bill_date=bill_date,
+        tenant_id=tenant_id,
+        allowed=allowed,
+        shift_id=shift_id,
+        payment_method_id=payment_method_id,
+        db=db,
+    )
+
+
 @router.get("/handover")
 def handover_report(
     bill_date: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_module("reports.query")),
 ):
+    tenant_id = get_current_tenant_id(db, current_user)
     allowed = _scoped_platform_ids(db, current_user)
     if allowed == []:
         return {"bill_date": bill_date, "shifts": [], "payment_balances": []}
@@ -759,7 +777,7 @@ def handover_report(
     for shift_id_val, category_id_val, biz_type_label_val, amount_sum in shift_expense_rows:
         by_shift.setdefault(int(shift_id_val), []).append((category_id_val, biz_type_label_val, float(amount_sum or 0)))
     for sid, rows in by_shift.items():
-        items = build_expense_items(db, rows)
+        items = build_expense_items(db, rows, tenant_id)
         shift_expense_map[sid] = format_expense_items(items)
 
     shifts = []
@@ -774,7 +792,7 @@ def handover_report(
                 "turnover": float(r[3] or 0),
             }
         )
-    balances = payment_balances(bill_date=bill_date, db=db, _=None)
+    balances = _payment_balances_core(bill_date=bill_date, tenant_id=tenant_id, allowed=allowed, db=db)
     return {"bill_date": bill_date, "shifts": shifts, "payment_balances": balances}
 
 

@@ -154,6 +154,18 @@ async function loadStats(row) {
   statsMap.value[row.id] = data
 }
 
+async function removeTenant(row) {
+  const ok = await ElMessageBox.confirm(`确认删除租户「${row.name}」？仅允许删除无业务数据的租户。`, '高风险操作', { type: 'warning' }).catch(() => null)
+  if (!ok) return
+  try {
+    await http.delete(`/master/tenants/${row.id}`)
+    ElMessage.success('租户删除成功')
+    await load()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '删除租户失败')
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -184,7 +196,7 @@ onMounted(load)
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="320">
+      <el-table-column label="操作" width="380">
         <template #default="{ row }">
           <el-space :size="8" wrap="false">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -193,6 +205,7 @@ onMounted(load)
             <el-upload :show-file-list="false" :auto-upload="false" :on-change="(file) => restoreTenantBackup(row, file)">
               <el-button link type="warning">恢复</el-button>
             </el-upload>
+            <el-button link type="danger" @click="removeTenant(row)">删除</el-button>
           </el-space>
         </template>
       </el-table-column>
