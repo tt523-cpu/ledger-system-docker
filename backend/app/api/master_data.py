@@ -647,7 +647,13 @@ def delete_entry_type(
 ):
     tenant_id = get_current_tenant_id(db, current_user)
     obj = _must_get_tenant_row(db, EntryType, entry_type_id, tenant_id, "entry type not found")
-    ref_count = db.execute(select(func.count(Transaction.id)).where(Transaction.biz_type_label == obj.name)).scalar_one()
+    ref_stmt = select(func.count(Transaction.id)).where(Transaction.biz_type_label == obj.name)
+    if tenant_id is not None:
+        tenant_platform_ids = db.execute(select(Platform.id).where(Platform.tenant_id == tenant_id)).scalars().all()
+        if not tenant_platform_ids:
+            tenant_platform_ids = [-1]
+        ref_stmt = ref_stmt.where(Transaction.platform_id.in_(tenant_platform_ids))
+    ref_count = db.execute(ref_stmt).scalar_one()
     if ref_count > 0:
         raise HTTPException(status_code=400, detail="该类型已被历史数据引用，不能删除")
     setting = db.execute(select(EntryTypeSetting).where(EntryTypeSetting.entry_type_id == obj.id)).scalar_one_or_none()
