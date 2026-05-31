@@ -5,7 +5,7 @@ from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_accessible_platform_ids, require_module, require_roles
+from app.core.deps import get_accessible_platform_ids, get_current_tenant_id, require_module, require_roles
 from app.models.entities import (
     AuditLog,
     Category,
@@ -32,6 +32,13 @@ def _scoped_platform_ids(db: Session, current_user: User) -> list[int] | None:
     if current_user.role in {UserRole.SUPER_ADMIN.value, UserRole.PLATFORM_VIEWER.value}:
         return None
     return get_accessible_platform_ids(db, current_user)
+
+
+def _tenant_select(model, tenant_id: int | None):
+    stmt = select(model)
+    if tenant_id is not None:
+        stmt = stmt.where(model.tenant_id == tenant_id)
+    return stmt
 
 
 def build_expense_items(db: Session, rows: list[tuple[int | None, str | None, float]]) -> list[dict]:
@@ -217,6 +224,7 @@ def monthly_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_module("reports.monthly")),
 ):
+    tenant_id = get_current_tenant_id(db, current_user)
     allowed = _scoped_platform_ids(db, current_user)
     if allowed == []:
         return MonthlySummaryOut(month=f"{year:04d}-{month:02d}", total_income=0, total_expense=0, net_profit=0)
@@ -287,7 +295,7 @@ def monthly_detail(
     if platform_id:
         expense_stmt = expense_stmt.where(Transaction.platform_id == platform_id)
     expense_rows = db.execute(expense_stmt.group_by(Transaction.category_id)).all()
-    category_map = {c.id: c.name for c in db.execute(select(Category)).scalars().all()}
+    category_map = {c.id: c.name for c in db.execute(_tenant_select(Category, tenant_id)).scalars().all()}
     expense_items = [
         {
             "category_id": r[0],
@@ -303,7 +311,7 @@ def monthly_detail(
     else:
         next_month_start = date(year, month + 1, 1)
 
-    methods = db.execute(select(PaymentMethod).where(PaymentMethod.status == "enabled")).scalars().all()
+    methods = db.execute(_tenant_select(PaymentMethod, tenant_id).where(PaymentMethod.status == "enabled")).scalars().all()
     account_balances = []
     for pm in methods:
         before_rows = db.execute(
@@ -370,7 +378,10 @@ def monthly_detail(
     if platform_id:
         platform_rows_stmt = platform_rows_stmt.where(DailySummary.platform_id == platform_id)
     platform_rows = db.execute(platform_rows_stmt.group_by(DailySummary.platform_id)).all()
-    platform_name_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
+    platform_name_stmt = select(Platform.id, Platform.name)
+    if tenant_id is not None:
+        platform_name_stmt = platform_name_stmt.where(Platform.tenant_id == tenant_id)
+    platform_name_map = {r[0]: r[1] for r in db.execute(platform_name_stmt).all()}
     platform_summaries = [
         {
             "platform_id": r[0],
@@ -385,7 +396,7 @@ def monthly_detail(
     return {
         "month": f"{year:04d}-{month:02d}",
         "platform_id": platform_id,
-        "platform_name": None if not platform_id else db.execute(select(Platform.name).where(Platform.id == platform_id)).scalar_one_or_none(),
+        "platform_name": None if not platform_id else db.execute(select(Platform.name).where(Platform.id == platform_id, Platform.tenant_id == tenant_id) if tenant_id is not None else select(Platform.name).where(Platform.id == platform_id)).scalar_one_or_none(),
         "summary": {
             "income": float(summary["total_income"]),
             "expense": float(summary["total_expense"]),
@@ -490,6 +501,7 @@ def report_query(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_module("reports.query")),
 ):
+    tenant_id = get_current_tenant_id(db, current_user)
     allowed = _scoped_platform_ids(db, current_user)
     if allowed == []:
         return {"items": [], "summary": {"income": 0.0, "expense": 0.0, "net": 0.0}, "platform_summaries": [], "expense_items": [], "start_date": start_date, "end_date": end_date}
@@ -508,7 +520,7 @@ def report_query(
     total_expense = sum(float(r.total_expense or 0) for r in rows)
     total_net = sum(float(r.net_profit or 0) for r in rows)
 
-    category_map = {c.id: c.name for c in db.execute(select(Category)).scalars().all()}
+    category_map = {c.id: c.name for c in db.execute(_tenant_select(Category, tenant_id)).scalars().all()}
 
     expense_stmt = select(Transaction.category_id, func.sum(Transaction.amount)).where(
         Transaction.bill_date >= start_date,
@@ -607,7 +619,10 @@ def report_query(
     if platform_id:
         platform_summary_stmt = platform_summary_stmt.where(DailySummary.platform_id == platform_id)
     platform_summary_rows = db.execute(platform_summary_stmt.group_by(DailySummary.platform_id)).all()
-    platform_name_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
+    platform_name_stmt = select(Platform.id, Platform.name)
+    if tenant_id is not None:
+        platform_name_stmt = platform_name_stmt.where(Platform.tenant_id == tenant_id)
+    platform_name_map = {r[0]: r[1] for r in db.execute(platform_name_stmt).all()}
     platform_summaries = [
         {
             "platform_id": r[0],
@@ -637,10 +652,11 @@ def payment_balances(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_module("reports.balances")),
 ):
+    tenant_id = get_current_tenant_id(db, current_user)
     allowed = _scoped_platform_ids(db, current_user)
     if allowed == []:
         return []
-    stmt_methods = select(PaymentMethod).where(PaymentMethod.status == "enabled")
+    stmt_methods = _tenant_select(PaymentMethod, tenant_id).where(PaymentMethod.status == "enabled")
     if payment_method_id:
         stmt_methods = stmt_methods.where(PaymentMethod.id == payment_method_id)
     methods = db.execute(stmt_methods).scalars().all()

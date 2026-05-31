@@ -69,6 +69,15 @@ def get_user_tenant_access(db: Session, user: User) -> UserTenantAccess | None:
     return db.execute(select(UserTenantAccess).where(UserTenantAccess.user_id == user.id)).scalar_one_or_none()
 
 
+def get_current_tenant_id(db: Session, user: User) -> int | None:
+    if user.role == UserRole.SUPER_ADMIN.value:
+        return None
+    access = get_user_tenant_access(db, user)
+    if access is None:
+        return None
+    return int(access.tenant_id)
+
+
 def get_tenant_platform_ids(db: Session, tenant_id: int) -> list[int]:
     rows = db.execute(select(TenantPlatformAccess.platform_id).where(TenantPlatformAccess.tenant_id == tenant_id)).all()
     return sorted(set(int(r[0]) for r in rows))

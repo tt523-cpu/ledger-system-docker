@@ -8,7 +8,7 @@ from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_accessible_platform_ids, require_module, require_roles
+from app.core.deps import get_accessible_platform_ids, get_current_tenant_id, require_module, require_roles
 from app.models.entities import AccountSnapshot, AuditLog, Category, DailySummary, PaymentMethod, Platform, Shift, Tenant, TenantPlatformAccess, Transaction, User
 from app.models.enums import UserRole
 
@@ -28,6 +28,13 @@ def _scoped_platform_ids(db: Session, current_user: User) -> list[int] | None:
     return get_accessible_platform_ids(db, current_user)
 
 
+def _tenant_select(model, tenant_id: int | None):
+    stmt = select(model)
+    if tenant_id is not None:
+        stmt = stmt.where(model.tenant_id == tenant_id)
+    return stmt
+
+
 @router.get("/daily-excel")
 def export_daily_excel(
     bill_date: str,
@@ -37,6 +44,7 @@ def export_daily_excel(
     current_user: User = Depends(require_module("reports.query")),
 ):
     allowed = _scoped_platform_ids(db, current_user)
+    tenant_id = get_current_tenant_id(db, current_user)
     if allowed == []:
         allowed = [-1]
     wb = Workbook()
@@ -52,8 +60,13 @@ def export_daily_excel(
     if platform_id:
         stmt = stmt.where(DailySummary.platform_id == platform_id)
     rows = db.execute(stmt.order_by(DailySummary.shift_id.asc(), DailySummary.platform_id.asc())).scalars().all()
-    platform_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
-    shift_map = {r[0]: r[1] for r in db.execute(select(Shift.id, Shift.name)).all()}
+    platform_stmt = select(Platform.id, Platform.name)
+    shift_stmt = select(Shift.id, Shift.name)
+    if tenant_id is not None:
+        platform_stmt = platform_stmt.where(Platform.tenant_id == tenant_id)
+        shift_stmt = shift_stmt.where(Shift.tenant_id == tenant_id)
+    platform_map = {r[0]: r[1] for r in db.execute(platform_stmt).all()}
+    shift_map = {r[0]: r[1] for r in db.execute(shift_stmt).all()}
 
     for row in rows:
         ws.append([
@@ -87,6 +100,7 @@ def export_report_query_excel(
     current_user: User = Depends(require_module("reports.query")),
 ):
     allowed = _scoped_platform_ids(db, current_user)
+    tenant_id = get_current_tenant_id(db, current_user)
     if allowed == []:
         allowed = [-1]
     wb = Workbook()
@@ -102,10 +116,15 @@ def export_report_query_excel(
     if platform_id:
         stmt = stmt.where(DailySummary.platform_id == platform_id)
     rows = db.execute(stmt.order_by(DailySummary.bill_date.asc(), DailySummary.shift_id.asc(), DailySummary.platform_id.asc())).scalars().all()
-    platform_map = {r[0]: r[1] for r in db.execute(select(Platform.id, Platform.name)).all()}
-    shift_map = {r[0]: r[1] for r in db.execute(select(Shift.id, Shift.name)).all()}
+    platform_stmt = select(Platform.id, Platform.name)
+    shift_stmt = select(Shift.id, Shift.name)
+    if tenant_id is not None:
+        platform_stmt = platform_stmt.where(Platform.tenant_id == tenant_id)
+        shift_stmt = shift_stmt.where(Shift.tenant_id == tenant_id)
+    platform_map = {r[0]: r[1] for r in db.execute(platform_stmt).all()}
+    shift_map = {r[0]: r[1] for r in db.execute(shift_stmt).all()}
 
-    category_map = {c.id: c.name for c in db.execute(select(Category)).scalars().all()}
+    category_map = {c.id: c.name for c in db.execute(_tenant_select(Category, tenant_id)).scalars().all()}
     row_expense_stmt = select(
         Transaction.bill_date,
         Transaction.shift_id,
@@ -162,7 +181,7 @@ def export_report_query_excel(
 
     ws_bal = wb.create_sheet("账户余额")
     ws_bal.append(["账户", "通道类型", "期初余额", "充值", "支出", "期末余额"])
-    methods = db.execute(select(PaymentMethod).where(PaymentMethod.status == "enabled")).scalars().all()
+    methods = db.execute(_tenant_select(PaymentMethod, tenant_id).where(PaymentMethod.status == "enabled")).scalars().all()
     total_opening = 0.0
     total_recharge = 0.0
     total_payout = 0.0
@@ -230,6 +249,7 @@ def export_handover_excel(
     current_user: User = Depends(require_module("reports.query")),
 ):
     allowed = _scoped_platform_ids(db, current_user)
+    tenant_id = get_current_tenant_id(db, current_user)
     if allowed == []:
         allowed = [-1]
     wb = Workbook()
@@ -248,7 +268,7 @@ def export_handover_excel(
 
     ws2 = wb.create_sheet("支付方式余额")
     ws2.append(["支付方式", "期初余额", "充值", "支出", "期末余额"])
-    methods_full = db.execute(select(PaymentMethod).where(PaymentMethod.status == "enabled")).scalars().all()
+    methods_full = db.execute(_tenant_select(PaymentMethod, tenant_id).where(PaymentMethod.status == "enabled")).scalars().all()
     for pm in methods_full:
         before_row = db.execute(
             select(func.sum(Transaction.amount), Transaction.type)

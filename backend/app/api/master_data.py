@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_tenant_platform_ids, get_user_tenant_access, require_module, require_roles
+from app.core.deps import get_current_tenant_id, get_tenant_platform_ids, get_user_tenant_access, require_module, require_roles
 from app.core.permissions import MODULES, DEFAULT_ROLE_MODULES, enabled_modules_for_role, replace_role_modules
 from app.core.security import get_password_hash
 from app.models.entities import Account, AuditLog, Category, DailySummary, EntryType, EntryTypeSetting, PaymentMethod, Platform, Shift, Tenant, TenantPlatformAccess, Transaction, User, UserPlatformAccess, UserTenantAccess
@@ -56,6 +56,23 @@ def _require_current_tenant_id(db: Session, current_user: User) -> int:
     if access is None:
         raise HTTPException(status_code=403, detail="current user not bound to tenant")
     return access.tenant_id
+
+
+def _tenant_filtered_stmt(model, tenant_id: int | None):
+    stmt = select(model)
+    if tenant_id is not None:
+        stmt = stmt.where(model.tenant_id == tenant_id)
+    return stmt
+
+
+def _must_get_tenant_row(db: Session, model, row_id: int, tenant_id: int | None, detail: str):
+    stmt = select(model).where(model.id == row_id)
+    if tenant_id is not None:
+        stmt = stmt.where(model.tenant_id == tenant_id)
+    row = db.execute(stmt).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=detail)
+    return row
 
 
 def _apply_common_update(obj, payload: MasterDataCreate):
@@ -411,12 +428,13 @@ def create_platform(
     current_user: User = Depends(require_module("master.platforms")),
     tenant_id: int | None = None,
 ):
-    obj = Platform(**payload.model_dump())
+    owner_tenant_id = tenant_id if current_user.role == UserRole.SUPER_ADMIN.value else _require_current_tenant_id(db, current_user)
+    obj = Platform(tenant_id=owner_tenant_id, **payload.model_dump())
     db.add(obj)
     db.flush()
     if current_user.role == UserRole.SUPER_ADMIN.value:
-        if tenant_id is not None:
-            db.add(TenantPlatformAccess(tenant_id=tenant_id, platform_id=obj.id))
+        if owner_tenant_id is not None:
+            db.add(TenantPlatformAccess(tenant_id=owner_tenant_id, platform_id=obj.id))
     else:
         current_tenant_id = _require_current_tenant_id(db, current_user)
         db.add(TenantPlatformAccess(tenant_id=current_tenant_id, platform_id=obj.id))
@@ -430,13 +448,8 @@ def list_platforms(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_module("master.platforms")),
 ):
-    stmt = select(Platform)
-    if current_user.role != UserRole.SUPER_ADMIN.value:
-        tenant_id = _require_current_tenant_id(db, current_user)
-        platform_ids = get_tenant_platform_ids(db, tenant_id)
-        if not platform_ids:
-            return []
-        stmt = stmt.where(Platform.id.in_(platform_ids))
+    tenant_id = get_current_tenant_id(db, current_user)
+    stmt = _tenant_filtered_stmt(Platform, tenant_id)
     return db.execute(stmt.order_by(Platform.sort_order.asc(), Platform.id.asc())).scalars().all()
 
 
@@ -447,14 +460,8 @@ def update_platform(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_module("master.platforms")),
 ):
-    obj = db.get(Platform, platform_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="platform not found")
-    if current_user.role != UserRole.SUPER_ADMIN.value:
-        tenant_id = _require_current_tenant_id(db, current_user)
-        platform_ids = set(get_tenant_platform_ids(db, tenant_id))
-        if platform_id not in platform_ids:
-            raise HTTPException(status_code=403, detail="no permission for this platform")
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, Platform, platform_id, tenant_id, "platform not found")
     _apply_common_update(obj, payload)
     db.commit()
     db.refresh(obj)
@@ -467,16 +474,10 @@ def delete_platform(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_module("master.platforms")),
 ):
-    obj = db.get(Platform, platform_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="platform not found")
-    if current_user.role != UserRole.SUPER_ADMIN.value:
-        tenant_id = _require_current_tenant_id(db, current_user)
-        platform_ids = set(get_tenant_platform_ids(db, tenant_id))
-        if platform_id not in platform_ids:
-            raise HTTPException(status_code=403, detail="no permission for this platform")
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, Platform, platform_id, tenant_id, "platform not found")
     db.execute(TenantPlatformAccess.__table__.delete().where(TenantPlatformAccess.platform_id == platform_id))
-    db.delete(obj)
+    obj.status = "disabled"
     db.commit()
     return {"ok": True}
 
@@ -485,9 +486,10 @@ def delete_platform(
 def create_shift(
     payload: ShiftCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.shifts")),
+    current_user: User = Depends(require_module("master.shifts")),
 ):
-    obj = Shift(**payload.model_dump())
+    owner_tenant_id = _require_current_tenant_id(db, current_user)
+    obj = Shift(tenant_id=owner_tenant_id, **payload.model_dump())
     db.add(obj)
     db.commit()
     db.refresh(obj)
@@ -497,9 +499,10 @@ def create_shift(
 @router.get("/shifts")
 def list_shifts(
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.shifts")),
+    current_user: User = Depends(require_module("master.shifts")),
 ):
-    return db.execute(select(Shift).order_by(Shift.sort_order.asc(), Shift.id.asc())).scalars().all()
+    tenant_id = get_current_tenant_id(db, current_user)
+    return db.execute(_tenant_filtered_stmt(Shift, tenant_id).order_by(Shift.sort_order.asc(), Shift.id.asc())).scalars().all()
 
 
 @router.put("/shifts/{shift_id}")
@@ -507,11 +510,10 @@ def update_shift(
     shift_id: int,
     payload: ShiftCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.shifts")),
+    current_user: User = Depends(require_module("master.shifts")),
 ):
-    obj = db.get(Shift, shift_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="shift not found")
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, Shift, shift_id, tenant_id, "shift not found")
     obj.name = payload.name
     obj.sort_order = payload.sort_order
     obj.start_time = payload.start_time
@@ -526,12 +528,11 @@ def update_shift(
 def delete_shift(
     shift_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.shifts")),
+    current_user: User = Depends(require_module("master.shifts")),
 ):
-    obj = db.get(Shift, shift_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="shift not found")
-    db.delete(obj)
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, Shift, shift_id, tenant_id, "shift not found")
+    obj.status = "disabled"
     db.commit()
     return {"ok": True}
 
@@ -540,9 +541,10 @@ def delete_shift(
 def create_category(
     payload: CategoryCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.categories")),
+    current_user: User = Depends(require_module("master.categories")),
 ):
-    obj = Category(**payload.model_dump())
+    tenant_id = _require_current_tenant_id(db, current_user)
+    obj = Category(tenant_id=tenant_id, **payload.model_dump())
     db.add(obj)
     db.commit()
     db.refresh(obj)
@@ -553,9 +555,10 @@ def create_category(
 def create_entry_type(
     payload: EntryTypeCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.entry_types")),
+    current_user: User = Depends(require_module("master.entry_types")),
 ):
-    obj = EntryType(name=payload.name, effect=payload.effect, sort_order=payload.sort_order, status=payload.status)
+    tenant_id = _require_current_tenant_id(db, current_user)
+    obj = EntryType(tenant_id=tenant_id, name=payload.name, effect=payload.effect, sort_order=payload.sort_order, status=payload.status)
     db.add(obj)
     db.flush()
     db.add(EntryTypeSetting(entry_type_id=obj.id, requires_category=payload.requires_category))
@@ -574,9 +577,10 @@ def create_entry_type(
 @router.get("/entry-types")
 def list_entry_types(
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.entry_types")),
+    current_user: User = Depends(require_module("master.entry_types")),
 ):
-    rows = db.execute(select(EntryType).order_by(EntryType.sort_order.asc(), EntryType.id.asc())).scalars().all()
+    tenant_id = get_current_tenant_id(db, current_user)
+    rows = db.execute(_tenant_filtered_stmt(EntryType, tenant_id).order_by(EntryType.sort_order.asc(), EntryType.id.asc())).scalars().all()
     setting_map = {s.entry_type_id: s.requires_category for s in db.execute(select(EntryTypeSetting)).scalars().all()}
     result = []
     for r in rows:
@@ -598,11 +602,10 @@ def update_entry_type(
     entry_type_id: int,
     payload: EntryTypeCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.entry_types")),
+    current_user: User = Depends(require_module("master.entry_types")),
 ):
-    obj = db.get(EntryType, entry_type_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="entry type not found")
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, EntryType, entry_type_id, tenant_id, "entry type not found")
     obj.name = payload.name
     obj.effect = payload.effect
     obj.sort_order = payload.sort_order
@@ -628,15 +631,14 @@ def update_entry_type(
 def delete_entry_type(
     entry_type_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.entry_types")),
+    current_user: User = Depends(require_module("master.entry_types")),
 ):
-    obj = db.get(EntryType, entry_type_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="entry type not found")
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, EntryType, entry_type_id, tenant_id, "entry type not found")
     setting = db.execute(select(EntryTypeSetting).where(EntryTypeSetting.entry_type_id == obj.id)).scalar_one_or_none()
     if setting is not None:
         db.delete(setting)
-    db.delete(obj)
+    obj.status = "disabled"
     db.commit()
     return {"ok": True}
 
@@ -644,9 +646,10 @@ def delete_entry_type(
 @router.get("/categories")
 def list_categories(
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.categories")),
+    current_user: User = Depends(require_module("master.categories")),
 ):
-    return db.execute(select(Category).order_by(Category.sort_order.asc(), Category.id.asc())).scalars().all()
+    tenant_id = get_current_tenant_id(db, current_user)
+    return db.execute(_tenant_filtered_stmt(Category, tenant_id).order_by(Category.sort_order.asc(), Category.id.asc())).scalars().all()
 
 
 @router.put("/categories/{category_id}")
@@ -654,11 +657,10 @@ def update_category(
     category_id: int,
     payload: CategoryCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.categories")),
+    current_user: User = Depends(require_module("master.categories")),
 ):
-    obj = db.get(Category, category_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="category not found")
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, Category, category_id, tenant_id, "category not found")
     for k, v in payload.model_dump().items():
         setattr(obj, k, v)
     db.commit()
@@ -670,12 +672,11 @@ def update_category(
 def delete_category(
     category_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.categories")),
+    current_user: User = Depends(require_module("master.categories")),
 ):
-    obj = db.get(Category, category_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="category not found")
-    db.delete(obj)
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, Category, category_id, tenant_id, "category not found")
+    obj.status = "disabled"
     db.commit()
     return {"ok": True}
 
@@ -684,16 +685,17 @@ def delete_category(
 def create_payment_method(
     payload: PaymentMethodCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.payment_methods")),
+    current_user: User = Depends(require_module("master.payment_methods")),
 ):
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    exists = db.execute(select(PaymentMethod.id).where(PaymentMethod.name == name)).scalar_one_or_none()
+    tenant_id = _require_current_tenant_id(db, current_user)
+    exists = db.execute(select(PaymentMethod.id).where(PaymentMethod.name == name, PaymentMethod.tenant_id == tenant_id)).scalar_one_or_none()
     if exists is not None:
         raise HTTPException(status_code=400, detail="账户名称已存在")
     payload.name = name
-    obj = PaymentMethod(**payload.model_dump())
+    obj = PaymentMethod(tenant_id=tenant_id, **payload.model_dump())
     db.add(obj)
     db.commit()
     db.refresh(obj)
@@ -703,9 +705,10 @@ def create_payment_method(
 @router.get("/payment-methods")
 def list_payment_methods(
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.payment_methods")),
+    current_user: User = Depends(require_module("master.payment_methods")),
 ):
-    return db.execute(select(PaymentMethod).order_by(PaymentMethod.sort_order.asc(), PaymentMethod.id.asc())).scalars().all()
+    tenant_id = get_current_tenant_id(db, current_user)
+    return db.execute(_tenant_filtered_stmt(PaymentMethod, tenant_id).order_by(PaymentMethod.sort_order.asc(), PaymentMethod.id.asc())).scalars().all()
 
 
 @router.put("/payment-methods/{payment_method_id}")
@@ -713,16 +716,15 @@ def update_payment_method(
     payment_method_id: int,
     payload: PaymentMethodCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.payment_methods")),
+    current_user: User = Depends(require_module("master.payment_methods")),
 ):
-    obj = db.get(PaymentMethod, payment_method_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="payment method not found")
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, PaymentMethod, payment_method_id, tenant_id, "payment method not found")
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     exists = db.execute(
-        select(PaymentMethod.id).where(PaymentMethod.name == name, PaymentMethod.id != payment_method_id)
+        select(PaymentMethod.id).where(PaymentMethod.name == name, PaymentMethod.id != payment_method_id, PaymentMethod.tenant_id == obj.tenant_id)
     ).scalar_one_or_none()
     if exists is not None:
         raise HTTPException(status_code=400, detail="账户名称已存在")
@@ -738,12 +740,11 @@ def update_payment_method(
 def delete_payment_method(
     payment_method_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_module("master.payment_methods")),
+    current_user: User = Depends(require_module("master.payment_methods")),
 ):
-    obj = db.get(PaymentMethod, payment_method_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="payment method not found")
-    db.delete(obj)
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, PaymentMethod, payment_method_id, tenant_id, "payment method not found")
+    obj.status = "disabled"
     db.commit()
     return {"ok": True}
 
@@ -752,9 +753,10 @@ def delete_payment_method(
 def create_account(
     payload: AccountCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
 ):
-    obj = Account(**payload.model_dump())
+    tenant_id = _require_current_tenant_id(db, current_user)
+    obj = Account(tenant_id=tenant_id, **payload.model_dump())
     db.add(obj)
     db.commit()
     db.refresh(obj)
@@ -764,9 +766,10 @@ def create_account(
 @router.get("/accounts")
 def list_accounts(
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
 ):
-    return db.execute(select(Account).order_by(Account.id.asc())).scalars().all()
+    tenant_id = get_current_tenant_id(db, current_user)
+    return db.execute(_tenant_filtered_stmt(Account, tenant_id).order_by(Account.id.asc())).scalars().all()
 
 
 @router.put("/accounts/{account_id}")
@@ -774,11 +777,10 @@ def update_account(
     account_id: int,
     payload: AccountCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
 ):
-    obj = db.get(Account, account_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="account not found")
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, Account, account_id, tenant_id, "account not found")
     for k, v in payload.model_dump().items():
         setattr(obj, k, v)
     db.commit()
@@ -790,12 +792,11 @@ def update_account(
 def delete_account(
     account_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles({UserRole.ADMIN.value})),
+    current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
 ):
-    obj = db.get(Account, account_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="account not found")
-    db.delete(obj)
+    tenant_id = get_current_tenant_id(db, current_user)
+    obj = _must_get_tenant_row(db, Account, account_id, tenant_id, "account not found")
+    obj.status = "disabled"
     db.commit()
     return {"ok": True}
 

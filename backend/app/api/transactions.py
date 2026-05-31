@@ -7,7 +7,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_accessible_platform_ids, get_user_platform_ids, require_roles
+from app.core.deps import get_accessible_platform_ids, get_current_tenant_id, get_user_platform_ids, require_roles
 from app.models.entities import AuditLog, Category, EntryType, EntryTypeSetting, Transaction, User
 from app.models.enums import TransactionType, UserRole
 from app.schemas.common import BatchTransactionCreate, OffsetTransactionCreate
@@ -62,10 +62,13 @@ def default_type_label(raw_type: str, normalized: str) -> str:
     return raw_type
 
 
-def type_requires_category(db: Session, type_label: str, normalized_type: str) -> bool:
+def type_requires_category(db: Session, tenant_id: int | None, type_label: str, normalized_type: str) -> bool:
     if normalized_type != TransactionType.EXPENSE.value:
         return False
-    et = db.execute(select(EntryType).where(EntryType.name == type_label)).scalar_one_or_none()
+    stmt = select(EntryType).where(EntryType.name == type_label)
+    if tenant_id is not None:
+        stmt = stmt.where(EntryType.tenant_id == tenant_id)
+    et = db.execute(stmt).scalar_one_or_none()
     if et is None:
         return type_label == "支出"
     st = db.execute(select(EntryTypeSetting).where(EntryTypeSetting.entry_type_id == et.id)).scalar_one_or_none()
@@ -79,7 +82,8 @@ def create_batch_transactions(
     payload: BatchTransactionCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value})),
-):
+): 
+    tenant_id = get_current_tenant_id(db, current_user)
     if not payload.lines:
         raise HTTPException(status_code=400, detail="lines cannot be empty")
     try:
@@ -116,12 +120,15 @@ def create_batch_transactions(
         if normalized_type == TransactionType.TRANSFER.value:
             raise HTTPException(status_code=400, detail="transfer is disabled")
 
-        requires_category = type_requires_category(db, type_label, normalized_type)
+        requires_category = type_requires_category(db, tenant_id, type_label, normalized_type)
         if requires_category and not line.category_id:
             raise HTTPException(status_code=400, detail="category_id is required for 支出")
 
         if line.category_id is not None:
-            category = db.execute(select(Category).where(Category.id == line.category_id)).scalar_one_or_none()
+            category_stmt = select(Category).where(Category.id == line.category_id)
+            if tenant_id is not None:
+                category_stmt = category_stmt.where(Category.tenant_id == tenant_id)
+            category = db.execute(category_stmt).scalar_one_or_none()
             if category is None:
                 raise HTTPException(status_code=404, detail=f"Category {line.category_id} not found")
 
@@ -250,7 +257,11 @@ def list_transactions(
     ).scalars().all()
     summary_row = db.execute(summary_stmt).first()
     expense_rows = db.execute(expense_detail_stmt.group_by(Transaction.category_id, Transaction.biz_type_label)).all()
-    category_map = {c.id: c.name for c in db.execute(select(Category)).scalars().all()}
+    tenant_id = get_current_tenant_id(db, current_user)
+    category_stmt = select(Category)
+    if tenant_id is not None:
+        category_stmt = category_stmt.where(Category.tenant_id == tenant_id)
+    category_map = {c.id: c.name for c in db.execute(category_stmt).scalars().all()}
     expense_detail = "，".join(
         f"{(category_map.get(r[0], f'项目#{r[0]}') if r[0] is not None else ((r[1] or '-').strip() or '-'))}:{float(r[2] or 0):.2f}"
         for r in expense_rows
@@ -322,7 +333,8 @@ def update_transaction(
             setattr(tx, k, v)
 
     label_for_check = tx.biz_type_label or default_type_label(tx.type, tx.type)
-    requires_category = type_requires_category(db, label_for_check, tx.type)
+    tenant_id = get_current_tenant_id(db, current_user)
+    requires_category = type_requires_category(db, tenant_id, label_for_check, tx.type)
     if requires_category and not tx.category_id:
         raise HTTPException(status_code=400, detail="category_id is required for 支出")
     if not requires_category:

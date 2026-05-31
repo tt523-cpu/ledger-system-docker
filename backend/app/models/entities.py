@@ -1,7 +1,7 @@
 from datetime import date, datetime, time
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, Time
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -73,9 +73,11 @@ class RoleModulePermission(Base):
 
 class Platform(Base):
     __tablename__ = "platforms"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_platforms_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default=GenericStatus.ENABLED.value)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -83,9 +85,11 @@ class Platform(Base):
 
 class Shift(Base):
     __tablename__ = "shifts"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_shifts_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(50), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(50))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
@@ -94,9 +98,11 @@ class Shift(Base):
 
 class Account(Base):
     __tablename__ = "accounts"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_accounts_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
     type: Mapped[str] = mapped_column(String(50))
     initial_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     status: Mapped[str] = mapped_column(String(20), default=GenericStatus.ENABLED.value)
@@ -105,9 +111,11 @@ class Account(Base):
 
 class PaymentMethod(Base):
     __tablename__ = "payment_methods"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_payment_methods_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
     type: Mapped[str] = mapped_column(String(30), default=PaymentMethodType.OTHER.value)
     initial_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     channel_kind: Mapped[str] = mapped_column(String(20), default=ChannelKind.INTERNAL.value)
@@ -119,9 +127,11 @@ class PaymentMethod(Base):
 
 class Category(Base):
     __tablename__ = "categories"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_categories_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
     type: Mapped[str] = mapped_column(String(20), default=TransactionType.EXPENSE.value)
     affect_profit: Mapped[bool] = mapped_column(Boolean, default=True)
     affect_balance: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -131,9 +141,11 @@ class Category(Base):
 
 class EntryType(Base):
     __tablename__ = "entry_types"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_entry_types_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
     effect: Mapped[str] = mapped_column(String(20), default=TransactionType.EXPENSE.value)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default=GenericStatus.ENABLED.value)

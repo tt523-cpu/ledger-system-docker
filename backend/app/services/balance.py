@@ -8,8 +8,11 @@ from app.models.entities import Account, AccountSnapshot, PaymentMethod, Transac
 from app.models.enums import TransactionType
 
 
-def rebuild_account_snapshot(db: Session, bill_date: date, shift_id: int, account_id: int, operator_id: int):
-    account = db.get(Account, account_id)
+def rebuild_account_snapshot(db: Session, bill_date: date, shift_id: int, account_id: int, operator_id: int, tenant_id: int | None = None):
+    account_stmt = select(Account).where(Account.id == account_id)
+    if tenant_id is not None:
+        account_stmt = account_stmt.where(Account.tenant_id == tenant_id)
+    account = db.execute(account_stmt).scalar_one_or_none()
     if account is None:
         return None
 
@@ -29,7 +32,10 @@ def rebuild_account_snapshot(db: Session, bill_date: date, shift_id: int, accoun
 
     for tx in tx_list:
         if tx.payment_method_id:
-            pm = db.get(PaymentMethod, tx.payment_method_id)
+            pm_stmt = select(PaymentMethod).where(PaymentMethod.id == tx.payment_method_id)
+            if tenant_id is not None:
+                pm_stmt = pm_stmt.where(PaymentMethod.tenant_id == tenant_id)
+            pm = db.execute(pm_stmt).scalar_one_or_none()
             if pm and not pm.affect_balance:
                 continue
 

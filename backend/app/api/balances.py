@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_roles
+from app.core.deps import get_current_tenant_id, require_roles
 from app.models.entities import Account, AccountSnapshot, AuditLog, User
 from app.models.enums import UserRole
 from app.schemas.common import AccountSnapshotOut, ActualBalanceUpdate
@@ -22,10 +22,14 @@ def rebuild_snapshots(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value})),
 ):
-    accounts = db.execute(select(Account)).scalars().all()
+    tenant_id = get_current_tenant_id(db, current_user)
+    account_stmt = select(Account)
+    if tenant_id is not None:
+        account_stmt = account_stmt.where(Account.tenant_id == tenant_id)
+    accounts = db.execute(account_stmt).scalars().all()
     count = 0
     for account in accounts:
-        snapshot = rebuild_account_snapshot(db, bill_date, shift_id, account.id, current_user.id)
+        snapshot = rebuild_account_snapshot(db, bill_date, shift_id, account.id, current_user.id, tenant_id)
         if snapshot:
             count += 1
 
