@@ -8,7 +8,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_tenant_id, get_tenant_platform_ids, get_user_tenant_access, require_module, require_roles
 from app.core.permissions import MODULES, DEFAULT_ROLE_MODULES, enabled_modules_for_role, replace_role_modules
 from app.core.security import get_password_hash
-from app.models.entities import Account, AuditLog, Category, DailySummary, EntryType, EntryTypeSetting, PaymentMethod, Platform, Shift, Tenant, TenantPlatformAccess, Transaction, User, UserPlatformAccess, UserTenantAccess
+from app.models.entities import Account, AccountSnapshot, AuditLog, Category, DailySummary, EntryType, EntryTypeSetting, HandoverPaymentSnapshot, PaymentMethod, Platform, Shift, Tenant, TenantPlatformAccess, Transaction, User, UserPlatformAccess, UserTenantAccess
 from app.models.enums import UserRole
 from app.schemas.common import AccountCreate, CategoryCreate, EntryTypeCreate, MasterDataCreate, PaymentMethodCreate, ShiftCreate, TenantAccessUpdate, TenantAdminCreate, TenantCreate, TenantUpdate
 
@@ -476,8 +476,15 @@ def delete_platform(
 ):
     tenant_id = get_current_tenant_id(db, current_user)
     obj = _must_get_tenant_row(db, Platform, platform_id, tenant_id, "platform not found")
+    ref_count = 0
+    ref_count += db.execute(select(func.count(Transaction.id)).where(Transaction.platform_id == platform_id)).scalar_one()
+    ref_count += db.execute(select(func.count(DailySummary.id)).where(DailySummary.platform_id == platform_id)).scalar_one()
+    ref_count += db.execute(select(func.count(UserPlatformAccess.id)).where(UserPlatformAccess.platform_id == platform_id)).scalar_one()
+    ref_count += db.execute(select(func.count(User.id)).where(User.platform_id == platform_id)).scalar_one()
+    if ref_count > 0:
+        raise HTTPException(status_code=400, detail="该平台已被历史数据引用，不能删除")
     db.execute(TenantPlatformAccess.__table__.delete().where(TenantPlatformAccess.platform_id == platform_id))
-    obj.status = "disabled"
+    db.delete(obj)
     db.commit()
     return {"ok": True}
 
@@ -532,7 +539,12 @@ def delete_shift(
 ):
     tenant_id = get_current_tenant_id(db, current_user)
     obj = _must_get_tenant_row(db, Shift, shift_id, tenant_id, "shift not found")
-    obj.status = "disabled"
+    ref_count = 0
+    ref_count += db.execute(select(func.count(Transaction.id)).where(Transaction.shift_id == shift_id)).scalar_one()
+    ref_count += db.execute(select(func.count(DailySummary.id)).where(DailySummary.shift_id == shift_id)).scalar_one()
+    if ref_count > 0:
+        raise HTTPException(status_code=400, detail="该班次已被历史数据引用，不能删除")
+    db.delete(obj)
     db.commit()
     return {"ok": True}
 
@@ -635,10 +647,13 @@ def delete_entry_type(
 ):
     tenant_id = get_current_tenant_id(db, current_user)
     obj = _must_get_tenant_row(db, EntryType, entry_type_id, tenant_id, "entry type not found")
+    ref_count = db.execute(select(func.count(Transaction.id)).where(Transaction.biz_type_label == obj.name)).scalar_one()
+    if ref_count > 0:
+        raise HTTPException(status_code=400, detail="该类型已被历史数据引用，不能删除")
     setting = db.execute(select(EntryTypeSetting).where(EntryTypeSetting.entry_type_id == obj.id)).scalar_one_or_none()
     if setting is not None:
         db.delete(setting)
-    obj.status = "disabled"
+    db.delete(obj)
     db.commit()
     return {"ok": True}
 
@@ -676,7 +691,10 @@ def delete_category(
 ):
     tenant_id = get_current_tenant_id(db, current_user)
     obj = _must_get_tenant_row(db, Category, category_id, tenant_id, "category not found")
-    obj.status = "disabled"
+    ref_count = db.execute(select(func.count(Transaction.id)).where(Transaction.category_id == category_id)).scalar_one()
+    if ref_count > 0:
+        raise HTTPException(status_code=400, detail="该项目已被历史数据引用，不能删除")
+    db.delete(obj)
     db.commit()
     return {"ok": True}
 
@@ -744,7 +762,12 @@ def delete_payment_method(
 ):
     tenant_id = get_current_tenant_id(db, current_user)
     obj = _must_get_tenant_row(db, PaymentMethod, payment_method_id, tenant_id, "payment method not found")
-    obj.status = "disabled"
+    ref_count = 0
+    ref_count += db.execute(select(func.count(Transaction.id)).where(Transaction.payment_method_id == payment_method_id)).scalar_one()
+    ref_count += db.execute(select(func.count(HandoverPaymentSnapshot.id)).where(HandoverPaymentSnapshot.payment_method_id == payment_method_id)).scalar_one()
+    if ref_count > 0:
+        raise HTTPException(status_code=400, detail="该账户已被历史数据引用，不能删除")
+    db.delete(obj)
     db.commit()
     return {"ok": True}
 
@@ -796,7 +819,13 @@ def delete_account(
 ):
     tenant_id = get_current_tenant_id(db, current_user)
     obj = _must_get_tenant_row(db, Account, account_id, tenant_id, "account not found")
-    obj.status = "disabled"
+    ref_count = 0
+    ref_count += db.execute(select(func.count(Transaction.id)).where(Transaction.account_id == account_id)).scalar_one()
+    ref_count += db.execute(select(func.count(Transaction.id)).where(Transaction.target_account_id == account_id)).scalar_one()
+    ref_count += db.execute(select(func.count(AccountSnapshot.id)).where(AccountSnapshot.account_id == account_id)).scalar_one()
+    if ref_count > 0:
+        raise HTTPException(status_code=400, detail="该账户已被历史数据引用，不能删除")
+    db.delete(obj)
     db.commit()
     return {"ok": True}
 

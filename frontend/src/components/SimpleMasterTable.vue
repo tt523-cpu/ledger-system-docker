@@ -81,10 +81,10 @@ async function saveEdit(id) {
   }
 }
 
-async function removeRow(id) {
+async function removeRow(row) {
   try {
     await ElMessageBox.confirm('确认删除该记录吗？', '提示', { type: 'warning' })
-    await http.delete(`/master/${props.endpoint}/${id}`)
+    await http.delete(`/master/${props.endpoint}/${row.id}`)
     ElMessage.success('删除成功')
     await load()
   } catch (err) {
@@ -141,7 +141,7 @@ onMounted(() => {
           <el-button v-if="editingId !== row.id" link type="primary" @click="startEdit(row)">编辑</el-button>
           <el-button v-if="editingId === row.id" link type="primary" @click="saveEdit(row.id)">保存</el-button>
           <el-button v-if="editingId === row.id" link @click="editingId = null">取消</el-button>
-          <el-button link type="danger" @click="removeRow(row.id)">删除</el-button>
+          <el-button link type="danger" @click="removeRow(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
