@@ -20,7 +20,21 @@ const backupFiles = ref([])
 function formatRestoreResult(data) {
   const total = Number(data?.total_rows || 0)
   const fileName = data?.restored_file || '未知文件'
+  const fixes = data?.fk_fixes || {}
+  const fixedTotal = Object.values(fixes).reduce((sum, n) => sum + Number(n || 0), 0)
+  if (fixedTotal > 0) {
+    return `恢复成功：${fileName}，写入 ${total} 条记录，自动修复 ${fixedTotal} 条用户外键`
+  }
   return `恢复成功：${fileName}，写入 ${total} 条记录`
+}
+
+function extractErrorMessage(err, actionText) {
+  const status = err?.response?.status
+  if (status === 413) {
+    return `${actionText}失败：备份文件过大，请联系管理员调大上传限制`
+  }
+  const detail = err?.response?.data?.detail
+  return detail ? `${actionText}失败：${detail}` : `${actionText}失败（HTTP ${status || '-'})`
 }
 
 async function loadMonthLocks() {
@@ -72,6 +86,8 @@ async function restoreBackup(file) {
     const { data } = await http.post('/system/backup/restore', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
     ElMessage.success(formatRestoreResult(data))
     await loadBackupFiles()
+  } catch (err) {
+    ElMessage.error(extractErrorMessage(err, '恢复备份'))
   } finally {
     restoring.value = false
   }
@@ -94,6 +110,8 @@ async function restoreTenantBackup(file) {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     ElMessage.success(formatRestoreResult(data))
+  } catch (err) {
+    ElMessage.error(extractErrorMessage(err, '恢复当前用户数据'))
   } finally {
     restoring.value = false
   }

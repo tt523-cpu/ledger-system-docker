@@ -1,8 +1,8 @@
-# 线上记账工具 V1
+# 线上记账工具
 
-当前已完成前后端第一版联调骨架（FastAPI + MySQL + Vue3），覆盖：
+当前版本已从 V1 骨架升级为可生产部署版本（FastAPI + MySQL + Vue3 + Docker），核心能力覆盖：
 
-- JWT 登录与角色权限（管理员/记账员/查看）
+- JWT 登录与角色权限（super_admin/admin/bookkeeper/platform_viewer）
 - 主数据管理（平台、班次、项目、支付方式、账户）
 - 批量流水录入（支持同日/同平台/同班次多笔）
 - 三方对冲快捷录入（充值与兑奖一键双分录）
@@ -10,8 +10,22 @@
 - 月汇总按日汇总聚合
 - 账户快照与差额计算
 - Excel 多 Sheet 导出
-- 审计日志基础记录
-- 前端15个业务页面（登录、录入、查询、报表、图表、导出、基础管理）
+- 审计日志 + 操作日志
+- 多租户权限隔离（超管全域、租户按绑定范围）
+- 超管后台：租户管理、平台报表、平台余额、后台用户、平台日志、平台工具
+- 系统备份恢复（全库/租户）、手动服务器备份、备份文件管理
+- 恢复结果可视化反馈（写入条数、自动修复外键条数）
+
+## 近期关键变更（2026-05）
+
+- 超管路由与菜单按模块权限严格拦截，修复 `/super` 回跳和循环问题
+- 新增超管模块权限键 `super.users`（后台用户）
+- 租户用户管理强化：`admin` 账号不可被同级删除/改权（仅支持重置密码）
+- 系统工具页精简：超管只保留备份恢复核心能力
+- 恢复接口新增结果字段：`restored_counts`、`total_rows`、`restored_file`
+- 恢复时自动修复历史脏数据中的用户外键引用（如 `transactions.operator_id`）
+- 前端恢复失败统一报错（含 HTTP 状态），避免“无反应”
+- Nginx 增加大文件上传限制：`client_max_body_size 200m`
 
 ## 本地启动（先测）
 
@@ -85,7 +99,6 @@ npm run build
 
 ## 仍需补强（建议）
 
-- 增加 Alembic 正式迁移脚本（当前为 `create_all` 自动建表）
 - 增加更细粒度权限菜单与字段级鉴权
 - 增加前端编辑弹窗、批量导入、移动端快捷数字键盘优化
 - 增加自动备份任务和月账锁定正式流程
@@ -141,7 +154,7 @@ cp .env.prod.example .env.prod
 
 并修改 `.env.prod` 中的密钥和数据库密码。
 
-### 2) 本机构建并启动
+### 2) 构建并启动
 
 ```bash
 docker compose --env-file .env.prod up -d --build
@@ -149,14 +162,22 @@ docker compose --env-file .env.prod up -d --build
 
 访问：`http://服务器IP/`
 
-### 3) 后续更新（拉镜像）
+### 3) 后续更新（代码构建）
+
+```bash
+git pull --ff-only origin main
+docker compose --env-file .env.prod up -d --build
+docker compose --env-file .env.prod exec -T backend alembic upgrade head
+```
+
+### 4) 后续更新（仅拉镜像）
 
 ```bash
 docker compose --env-file .env.prod pull
 docker compose --env-file .env.prod up -d
 ```
 
-### 4) GitHub Actions 自动发布镜像
+### 5) GitHub Actions 自动发布镜像
 
 仓库已提供工作流：`.github/workflows/docker-publish.yml`
 
@@ -169,3 +190,41 @@ docker compose --env-file .env.prod up -d
 
 - `tt523-cpu/ledger-system-backend:latest`
 - `tt523-cpu/ledger-system-frontend:latest`
+
+## 部署脚本注意事项（重要）
+
+- 你的一键部署脚本里“重置管理员账号”逻辑可用，模型字段应使用 `password_hash`（不是 `hashed_password`）。
+- 如果刚执行过“恢复备份(JSON)”，登录密码以备份中的用户数据为准，可能覆盖掉部署脚本刚重置的密码。
+- 建议将“重置管理员密码”放在恢复之后，或作为独立运维命令手动执行。
+
+推荐密码重置命令：
+
+```bash
+docker compose --env-file .env.prod exec -T backend python - <<'PY'
+from sqlalchemy import select
+from app.core.database import SessionLocal
+from app.core.security import get_password_hash
+from app.models.entities import User
+from app.models.enums import GenericStatus, UserRole
+
+db = SessionLocal()
+try:
+    user = db.execute(select(User).where(User.username == "admin")).scalar_one_or_none()
+    if user is None:
+        user = User(
+            username="admin",
+            password_hash=get_password_hash("admin123456"),
+            role=UserRole.SUPER_ADMIN.value,
+            status=GenericStatus.ENABLED.value,
+        )
+        db.add(user)
+    else:
+        user.password_hash = get_password_hash("admin123456")
+        user.role = UserRole.SUPER_ADMIN.value
+        user.status = GenericStatus.ENABLED.value
+    db.commit()
+    print("管理员账号已设置：admin / admin123456")
+finally:
+    db.close()
+PY
+```

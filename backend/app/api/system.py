@@ -56,6 +56,60 @@ BACKUP_TABLES = [
 ]
 
 
+def _sanitize_user_fk_rows(tables: dict):
+    users = tables.get("users", [])
+    if not isinstance(users, list):
+        return {}
+
+    user_ids = {row.get("id") for row in users if isinstance(row, dict) and row.get("id") is not None}
+    if not user_ids:
+        return {}
+
+    admin_id = next(
+        (row.get("id") for row in users if isinstance(row, dict) and row.get("username") == "admin" and row.get("id") is not None),
+        None,
+    )
+    fallback_user_id = admin_id if admin_id in user_ids else min(user_ids)
+
+    fixed_counts = {
+        "transactions.operator_id": 0,
+        "month_locks.locked_by": 0,
+        "audit_logs.user_id": 0,
+    }
+
+    tx_rows = tables.get("transactions", [])
+    if isinstance(tx_rows, list):
+        for row in tx_rows:
+            if not isinstance(row, dict):
+                continue
+            operator_id = row.get("operator_id")
+            if operator_id is not None and operator_id not in user_ids:
+                row["operator_id"] = fallback_user_id
+                fixed_counts["transactions.operator_id"] += 1
+
+    lock_rows = tables.get("month_locks", [])
+    if isinstance(lock_rows, list):
+        for row in lock_rows:
+            if not isinstance(row, dict):
+                continue
+            locked_by = row.get("locked_by")
+            if locked_by is not None and locked_by not in user_ids:
+                row["locked_by"] = fallback_user_id
+                fixed_counts["month_locks.locked_by"] += 1
+
+    audit_rows = tables.get("audit_logs", [])
+    if isinstance(audit_rows, list):
+        for row in audit_rows:
+            if not isinstance(row, dict):
+                continue
+            user_id = row.get("user_id")
+            if user_id is not None and user_id not in user_ids:
+                row["user_id"] = fallback_user_id
+                fixed_counts["audit_logs.user_id"] += 1
+
+    return {k: v for k, v in fixed_counts.items() if v > 0}
+
+
 @router.get("/month-locks")
 def list_month_locks(
     db: Session = Depends(get_db),
@@ -394,6 +448,7 @@ async def restore_tenant_backup(
     raw = await file.read()
     data = json.loads(raw.decode("utf-8"))
     tables = data.get("tables", {})
+    fk_fixes = _sanitize_user_fk_rows(tables)
     restored_counts: dict[str, int] = {}
 
     platform_rows = db.execute(select(TenantPlatformAccess).where(TenantPlatformAccess.tenant_id == tenant_id)).scalars().all()
@@ -454,6 +509,7 @@ async def restore_tenant_backup(
         "tenant_id": tenant_id,
         "restored_file": file.filename,
         "restored_counts": restored_counts,
+        "fk_fixes": fk_fixes,
         "total_rows": int(sum(restored_counts.values())),
     }
 
@@ -571,6 +627,7 @@ async def restore_backup(
     raw = await file.read()
     data = json.loads(raw.decode("utf-8"))
     tables = data.get("tables", {})
+    fk_fixes = _sanitize_user_fk_rows(tables)
     restored_counts: dict[str, int] = {}
 
     for _, model in reversed(BACKUP_TABLES):
@@ -597,6 +654,7 @@ async def restore_backup(
         "ok": True,
         "restored_file": file.filename,
         "restored_counts": restored_counts,
+        "fk_fixes": fk_fixes,
         "total_rows": int(sum(restored_counts.values())),
     }
 
