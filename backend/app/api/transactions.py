@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_accessible_platform_ids, get_current_tenant_id, get_user_platform_ids, require_roles
-from app.models.entities import AuditLog, Category, EntryType, EntryTypeSetting, Transaction, User
+from app.models.entities import AuditLog, Category, EntryType, EntryTypeSetting, PaymentMethod, Platform, Transaction, User
 from app.models.enums import TransactionType, UserRole
 from app.schemas.common import BatchTransactionCreate, OffsetTransactionCreate
 from app.services.month_lock import assert_month_not_locked
@@ -182,6 +182,7 @@ def list_transactions(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles({UserRole.ADMIN.value, UserRole.BOOKKEEPER.value, UserRole.VIEWER.value})),
 ):
+    tenant_id = get_current_tenant_id(db, current_user)
     stmt = select(Transaction).where(Transaction.deleted_at.is_(None))
     count_stmt = select(func.count(Transaction.id)).where(Transaction.deleted_at.is_(None))
     summary_stmt = select(
@@ -255,9 +256,24 @@ def list_transactions(
     rows = db.execute(
         stmt.order_by(Transaction.id.desc()).offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
+    platform_ids_in_rows = sorted({int(r.platform_id) for r in rows if r.platform_id is not None})
+    payment_method_ids_in_rows = sorted({int(r.payment_method_id) for r in rows if r.payment_method_id is not None})
+
+    platform_name_map: dict[int, str] = {}
+    payment_method_name_map: dict[int, str] = {}
+    if platform_ids_in_rows:
+        platform_stmt = select(Platform.id, Platform.name).where(Platform.id.in_(platform_ids_in_rows))
+        if tenant_id is not None:
+            platform_stmt = platform_stmt.where(Platform.tenant_id == tenant_id)
+        platform_name_map = {int(pid): name for pid, name in db.execute(platform_stmt).all()}
+    if payment_method_ids_in_rows:
+        payment_stmt = select(PaymentMethod.id, PaymentMethod.name).where(PaymentMethod.id.in_(payment_method_ids_in_rows))
+        if tenant_id is not None:
+            payment_stmt = payment_stmt.where(PaymentMethod.tenant_id == tenant_id)
+        payment_method_name_map = {int(pid): name for pid, name in db.execute(payment_stmt).all()}
+
     summary_row = db.execute(summary_stmt).first()
     expense_rows = db.execute(expense_detail_stmt.group_by(Transaction.category_id, Transaction.biz_type_label)).all()
-    tenant_id = get_current_tenant_id(db, current_user)
     category_stmt = select(Category)
     if tenant_id is not None:
         category_stmt = category_stmt.where(Category.tenant_id == tenant_id)
@@ -271,6 +287,8 @@ def list_transactions(
         "total": total,
         "page": page,
         "page_size": page_size,
+        "platform_name_map": platform_name_map,
+        "payment_method_name_map": payment_method_name_map,
         "summary": {
             "expense": float(summary_row[0] or 0),
             "recharge": float(summary_row[1] or 0),

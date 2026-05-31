@@ -37,18 +37,18 @@ function addRow() {
 }
 
 async function loadMaster() {
-  const [s, p, c, pm, et] = await Promise.all([
+  const [s, p, c, pm, et] = await Promise.allSettled([
     http.get('/master/shifts'),
     http.get('/master/platforms'),
     http.get('/master/categories'),
     http.get('/master/payment-methods'),
     http.get('/master/entry-types'),
   ])
-  shifts.value = s.data
-  platforms.value = p.data
-  categories.value = c.data
-  accounts.value = pm.data
-  entryTypes.value = et.data.filter((x) => x.status === 'enabled')
+  shifts.value = s.status === 'fulfilled' ? (s.value.data || []) : []
+  platforms.value = p.status === 'fulfilled' ? (p.value.data || []) : []
+  categories.value = c.status === 'fulfilled' ? (c.value.data || []) : []
+  accounts.value = pm.status === 'fulfilled' ? (pm.value.data || []) : []
+  entryTypes.value = et.status === 'fulfilled' ? ((et.value.data || []).filter((x) => x.status === 'enabled')) : []
   const allowedIds = new Set((auth.platformIds || []).map((x) => Number(x)))
   selectablePlatforms.value = auth.role === 'bookkeeper' && allowedIds.size > 0
     ? platforms.value.filter((x) => allowedIds.has(Number(x.id)))

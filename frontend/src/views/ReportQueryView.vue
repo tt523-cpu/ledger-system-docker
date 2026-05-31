@@ -114,14 +114,18 @@ async function search() {
 
     if (mode.value === 'day') {
       const billDate = params.start_date
-      const [pb, ho] = await Promise.all([
+      const [pb, ho] = await Promise.allSettled([
         http.get('/reports/payment-balances', { params: { bill_date: billDate } }),
         http.get('/reports/handover', { params: { bill_date: billDate } }),
       ])
-      paymentBalances.value = pb.data
-      handover.value = ho.data
-      const cf = await http.get('/reports/handover/confirmed', { params: { bill_date: billDate } })
-      confirmedInfo.value = cf.data
+      paymentBalances.value = pb.status === 'fulfilled' ? (pb.value.data || []) : []
+      handover.value = ho.status === 'fulfilled' ? (ho.value.data || { shifts: [] }) : { shifts: [] }
+      try {
+        const cf = await http.get('/reports/handover/confirmed', { params: { bill_date: billDate } })
+        confirmedInfo.value = cf.data
+      } catch {
+        confirmedInfo.value = { confirmed: false }
+      }
     } else {
       paymentBalances.value = []
       handover.value = { shifts: [] }

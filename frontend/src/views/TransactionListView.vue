@@ -34,6 +34,8 @@ const platforms = ref([])
 const accounts = ref([])
 const categories = ref([])
 const entryTypes = ref([])
+const platformNameMap = ref({})
+const accountNameMap = ref({})
 const auth = useAuthStore()
 const editing = ref(false)
 const saving = ref(false)
@@ -68,6 +70,8 @@ async function load() {
   const { data } = await http.get('/transactions', { params })
   items.value = data.items
   total.value = data.total
+  platformNameMap.value = data.platform_name_map || {}
+  accountNameMap.value = data.payment_method_name_map || {}
   summary.recharge = Number(data.summary?.recharge || 0)
   summary.redeem = Number(data.summary?.redeem || 0)
   summary.expense = Number(data.summary?.expense || 0)
@@ -110,25 +114,29 @@ function buildQueryParams() {
 }
 
 async function loadPlatforms() {
-  const [p, a, c, et] = await Promise.all([
+  const [p, a, c, et] = await Promise.allSettled([
     http.get('/master/platforms'),
     http.get('/master/payment-methods'),
     http.get('/master/categories'),
     http.get('/master/entry-types'),
   ])
-  platforms.value = p.data
-  accounts.value = a.data
-  categories.value = c.data
-  entryTypes.value = (et.data || []).filter((x) => x.status === 'enabled')
+  platforms.value = p.status === 'fulfilled' ? (p.value.data || []) : []
+  accounts.value = a.status === 'fulfilled' ? (a.value.data || []) : []
+  categories.value = c.status === 'fulfilled' ? (c.value.data || []) : []
+  entryTypes.value = et.status === 'fulfilled' ? ((et.value.data || []).filter((x) => x.status === 'enabled')) : []
 }
 
 function getPlatformName(id) {
+  const mapped = platformNameMap.value?.[id]
+  if (mapped) return mapped
   const row = platforms.value.find((p) => p.id === id)
   return row ? row.name : `平台#${id}`
 }
 
 function getAccountName(id) {
   if (!id) return '-'
+  const mapped = accountNameMap.value?.[id]
+  if (mapped) return mapped
   const row = accounts.value.find((a) => a.id === id)
   return row ? row.name : `账户#${id}`
 }
