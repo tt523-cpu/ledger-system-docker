@@ -15,6 +15,7 @@
 - 超管后台：租户管理、平台报表、平台余额、后台用户、平台日志、平台工具
 - 系统备份恢复（全库/租户）、手动服务器备份、备份文件管理
 - 恢复结果可视化反馈（写入条数、自动修复外键条数）
+- 全库备份已覆盖租户体系与核心主数据（`tenants`、`user_tenant_access`、`tenant_platform_access`、`accounts`、`entry_types`、`entry_type_settings`、`role_module_permissions`）
 
 ## 近期关键变更（2026-05）
 

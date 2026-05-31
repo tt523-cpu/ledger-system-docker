@@ -12,16 +12,20 @@ from app.core.database import get_db
 from app.core.deps import get_accessible_platform_ids, get_user_tenant_access, require_module, require_roles
 from app.core.time_utils import beijing_now
 from app.models.entities import (
+    Account,
     AccountSnapshot,
     AuditLog,
     Category,
     DailySummary,
+    EntryType,
+    EntryTypeSetting,
     HandoverPaymentSnapshot,
     HandoverSnapshot,
     MonthLock,
     OperationLog,
     PaymentMethod,
     Platform,
+    RoleModulePermission,
     Shift,
     Tenant,
     TenantPlatformAccess,
@@ -39,11 +43,18 @@ BACKUP_DIR = Path("backups")
 
 
 BACKUP_TABLES = [
+    ("tenants", Tenant),
     ("platforms", Platform),
     ("shifts", Shift),
+    ("accounts", Account),
     ("payment_methods", PaymentMethod),
     ("categories", Category),
+    ("entry_types", EntryType),
+    ("entry_type_settings", EntryTypeSetting),
     ("users", User),
+    ("role_module_permissions", RoleModulePermission),
+    ("user_tenant_access", UserTenantAccess),
+    ("tenant_platform_access", TenantPlatformAccess),
     ("user_platform_access", UserPlatformAccess),
     ("transactions", Transaction),
     ("daily_summaries", DailySummary),
