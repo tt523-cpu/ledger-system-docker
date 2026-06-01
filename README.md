@@ -97,6 +97,13 @@ npm run build
 - `GET /system/logs?page=1&page_size=20`
 - `GET /system/charts/income-expense-trend`
 - `GET /system/charts/profit-by-platform`
+- `GET /master/tenants/{tenant_id}/delete-check`
+- `DELETE /master/tenants/{tenant_id}`
+
+## 运维文档
+
+- 操作手册：`docs/RUNBOOK.md`
+- 一个月落地计划：`docs/ONE_MONTH_ROADMAP.md`
 
 ## 仍需补强（建议）
 

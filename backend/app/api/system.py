@@ -1,4 +1,6 @@
 import json
+import csv
+from io import StringIO
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -279,6 +281,26 @@ def list_logs(
     return {"items": rows, "total": total, "page": page, "page_size": page_size}
 
 
+@router.get("/logs/export")
+def export_logs(
+    limit: int = Query(default=5000, ge=1, le=20000),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_module("logs", {UserRole.ADMIN.value})),
+):
+    rows = db.execute(select(AuditLog).order_by(desc(AuditLog.id)).limit(limit)).scalars().all()
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "user_id", "module", "action", "before_data", "after_data", "ip", "created_at"])
+    for r in rows:
+        writer.writerow([r.id, r.user_id, r.module, r.action, r.before_data or "", r.after_data or "", r.ip or "", r.created_at.isoformat() if r.created_at else ""])
+    content = buf.getvalue()
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=audit-logs-{beijing_now().strftime('%Y%m%d-%H%M%S')}.csv"},
+    )
+
+
 @router.delete("/logs")
 def clear_logs(
     db: Session = Depends(get_db),
@@ -323,6 +345,47 @@ def list_operation_logs(
     total = db.execute(count_stmt).scalar_one()
     rows = db.execute(stmt.order_by(desc(OperationLog.id)).offset((page - 1) * page_size).limit(page_size)).scalars().all()
     return {"items": rows, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/operation-logs/export")
+def export_operation_logs(
+    username: str | None = Query(default=None),
+    method: str | None = Query(default=None),
+    path_keyword: str | None = Query(default=None),
+    limit: int = Query(default=5000, ge=1, le=20000),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_module("operation.logs", {UserRole.ADMIN.value})),
+):
+    stmt = select(OperationLog)
+    if username:
+        stmt = stmt.where(OperationLog.username == username)
+    if method:
+        stmt = stmt.where(OperationLog.method == method.upper())
+    if path_keyword:
+        stmt = stmt.where(OperationLog.path.like(f"%{path_keyword}%"))
+    rows = db.execute(stmt.order_by(desc(OperationLog.id)).limit(limit)).scalars().all()
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "user_id", "username", "method", "path", "status_code", "duration_ms", "ip", "error_message", "created_at"])
+    for r in rows:
+        writer.writerow([
+            r.id,
+            r.user_id or "",
+            r.username or "",
+            r.method,
+            r.path,
+            r.status_code,
+            r.duration_ms,
+            r.ip or "",
+            r.error_message or "",
+            r.created_at.isoformat() if r.created_at else "",
+        ])
+    content = buf.getvalue()
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=operation-logs-{beijing_now().strftime('%Y%m%d-%H%M%S')}.csv"},
+    )
 
 
 @router.delete("/operation-logs")

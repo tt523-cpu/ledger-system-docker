@@ -11,6 +11,8 @@ const createForm = reactive({ name: '', status: 'enabled', admin_username: '', a
 
 const editDialog = ref(false)
 const editForm = reactive({ id: null, name: '', status: 'enabled', admin_username: '', admin_password: '', admin_expire_at: '' })
+const deleteCheckDialog = ref(false)
+const deleteCheckData = ref({ tenant_id: null, tenant_name: '', checks: {}, blocking: {}, deletable: false })
 
 async function load() {
   const { data } = await http.get('/master/tenants')
@@ -166,6 +168,21 @@ async function removeTenant(row) {
   }
 }
 
+async function openDeleteCheck(row) {
+  try {
+    const { data } = await http.get(`/master/tenants/${row.id}/delete-check`)
+    deleteCheckData.value = data
+    deleteCheckDialog.value = true
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '检查失败')
+  }
+}
+
+function deleteCheckRows() {
+  const checks = deleteCheckData.value?.checks || {}
+  return Object.keys(checks).map((k) => ({ table: k, count: Number(checks[k] || 0) }))
+}
+
 onMounted(load)
 </script>
 
@@ -196,7 +213,7 @@ onMounted(load)
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="380">
+      <el-table-column label="操作" width="440">
         <template #default="{ row }">
           <el-space :size="8" wrap="false">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -205,6 +222,7 @@ onMounted(load)
             <el-upload :show-file-list="false" :auto-upload="false" :on-change="(file) => restoreTenantBackup(row, file)">
               <el-button link type="warning">恢复</el-button>
             </el-upload>
+            <el-button link type="info" @click="openDeleteCheck(row)">删除检查</el-button>
             <el-button link type="danger" @click="removeTenant(row)">删除</el-button>
           </el-space>
         </template>
@@ -246,6 +264,25 @@ onMounted(load)
       <template #footer>
         <el-button @click="editDialog = false">取消</el-button>
         <el-button type="primary" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="deleteCheckDialog" title="删除前检查" width="680px">
+      <div style="margin-bottom: 10px">
+        <strong>租户：</strong>{{ deleteCheckData.tenant_name }}（ID={{ deleteCheckData.tenant_id }}）
+      </div>
+      <el-alert
+        :type="deleteCheckData.deletable ? 'success' : 'warning'"
+        :title="deleteCheckData.deletable ? '可删除：当前未发现业务数据引用' : '不可删除：请先清理有数据的表'"
+        show-icon
+        style="margin-bottom: 12px"
+      />
+      <el-table :data="deleteCheckRows()" border>
+        <el-table-column prop="table" label="表名" />
+        <el-table-column prop="count" label="数量" width="140" />
+      </el-table>
+      <template #footer>
+        <el-button @click="deleteCheckDialog = false">关闭</el-button>
       </template>
     </el-dialog>
   </el-card>

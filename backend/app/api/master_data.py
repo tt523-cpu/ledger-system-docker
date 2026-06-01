@@ -76,6 +76,37 @@ def _must_get_tenant_row(db: Session, model, row_id: int, tenant_id: int | None,
     return row
 
 
+def _tenant_delete_checks(db: Session, tenant_id: int) -> dict[str, int]:
+    platform_ids = [int(r[0]) for r in db.execute(select(Platform.id).where(Platform.tenant_id == tenant_id)).all()]
+    checks = {
+        "platforms": db.execute(select(func.count(Platform.id)).where(Platform.tenant_id == tenant_id)).scalar_one(),
+        "shifts": db.execute(select(func.count(Shift.id)).where(Shift.tenant_id == tenant_id)).scalar_one(),
+        "accounts": db.execute(select(func.count(Account.id)).where(Account.tenant_id == tenant_id)).scalar_one(),
+        "payment_methods": db.execute(select(func.count(PaymentMethod.id)).where(PaymentMethod.tenant_id == tenant_id)).scalar_one(),
+        "categories": db.execute(select(func.count(Category.id)).where(Category.tenant_id == tenant_id)).scalar_one(),
+        "entry_types": db.execute(select(func.count(EntryType.id)).where(EntryType.tenant_id == tenant_id)).scalar_one(),
+        "transactions": db.execute(
+            select(func.count(Transaction.id)).where(Transaction.platform_id.in_(platform_ids) if platform_ids else False)
+        ).scalar_one(),
+        "daily_summaries": db.execute(
+            select(func.count(DailySummary.id)).where(DailySummary.platform_id.in_(platform_ids) if platform_ids else False)
+        ).scalar_one(),
+        "account_snapshots": db.execute(
+            select(func.count(AccountSnapshot.id)).where(AccountSnapshot.account_id.in_(
+                select(Account.id).where(Account.tenant_id == tenant_id)
+            ))
+        ).scalar_one(),
+        "handover_payment_snapshots": db.execute(
+            select(func.count(HandoverPaymentSnapshot.id)).where(
+                HandoverPaymentSnapshot.payment_method_id.in_(
+                    select(PaymentMethod.id).where(PaymentMethod.tenant_id == tenant_id)
+                )
+            )
+        ).scalar_one(),
+    }
+    return {k: int(v or 0) for k, v in checks.items()}
+
+
 def _apply_common_update(obj, payload: MasterDataCreate):
     obj.name = payload.name
     obj.sort_order = payload.sort_order
@@ -246,37 +277,8 @@ def delete_tenant(
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
-
-    platform_ids = [
-        int(r[0]) for r in db.execute(select(Platform.id).where(Platform.tenant_id == tenant_id)).all()
-    ]
-    checks = {
-        "platforms": db.execute(select(func.count(Platform.id)).where(Platform.tenant_id == tenant_id)).scalar_one(),
-        "shifts": db.execute(select(func.count(Shift.id)).where(Shift.tenant_id == tenant_id)).scalar_one(),
-        "accounts": db.execute(select(func.count(Account.id)).where(Account.tenant_id == tenant_id)).scalar_one(),
-        "payment_methods": db.execute(select(func.count(PaymentMethod.id)).where(PaymentMethod.tenant_id == tenant_id)).scalar_one(),
-        "categories": db.execute(select(func.count(Category.id)).where(Category.tenant_id == tenant_id)).scalar_one(),
-        "entry_types": db.execute(select(func.count(EntryType.id)).where(EntryType.tenant_id == tenant_id)).scalar_one(),
-        "transactions": db.execute(
-            select(func.count(Transaction.id)).where(Transaction.platform_id.in_(platform_ids) if platform_ids else False)
-        ).scalar_one(),
-        "daily_summaries": db.execute(
-            select(func.count(DailySummary.id)).where(DailySummary.platform_id.in_(platform_ids) if platform_ids else False)
-        ).scalar_one(),
-        "account_snapshots": db.execute(
-            select(func.count(AccountSnapshot.id)).where(AccountSnapshot.account_id.in_(
-                select(Account.id).where(Account.tenant_id == tenant_id)
-            ))
-        ).scalar_one(),
-        "handover_payment_snapshots": db.execute(
-            select(func.count(HandoverPaymentSnapshot.id)).where(
-                HandoverPaymentSnapshot.payment_method_id.in_(
-                    select(PaymentMethod.id).where(PaymentMethod.tenant_id == tenant_id)
-                )
-            )
-        ).scalar_one(),
-    }
-    blocking = {k: int(v) for k, v in checks.items() if int(v) > 0}
+    checks = _tenant_delete_checks(db, tenant_id)
+    blocking = {k: v for k, v in checks.items() if v > 0}
     if blocking:
         detail = "该租户存在业务数据，不能删除：" + ", ".join([f"{k}={v}" for k, v in blocking.items()])
         raise HTTPException(status_code=400, detail=detail)
@@ -311,6 +313,26 @@ def delete_tenant(
     )
     db.commit()
     return {"ok": True, "deleted_users": deleted_users}
+
+
+@router.get("/tenants/{tenant_id}/delete-check")
+def tenant_delete_check(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_module("master.tenants", {UserRole.SUPER_ADMIN.value})),
+):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    checks = _tenant_delete_checks(db, tenant_id)
+    blocking = {k: v for k, v in checks.items() if v > 0}
+    return {
+        "tenant_id": tenant_id,
+        "tenant_name": tenant.name,
+        "checks": checks,
+        "blocking": blocking,
+        "deletable": len(blocking) == 0,
+    }
 
 
 @router.put("/users/{user_id}/tenant-access")
