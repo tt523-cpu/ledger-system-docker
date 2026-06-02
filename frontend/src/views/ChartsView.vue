@@ -37,7 +37,7 @@ async function load() {
       { name: '支出', type: 'line', data: trend.data.map((i) => i.expense) },
       { name: '净营业', type: 'line', data: trend.data.map((i) => i.net) },
     ],
-  })
+  }, { notMerge: true })
 
   const platformEl = document.getElementById('platform')
   if (!platformEl) return
@@ -48,7 +48,7 @@ async function load() {
     xAxis: { type: 'category', data: plat.data.map((i) => i.platform_name) },
     yAxis: { type: 'value' },
     series: [{ type: 'bar', data: plat.data.map((i) => i.net) }],
-  })
+  }, { notMerge: true })
 }
 
 onMounted(async () => {

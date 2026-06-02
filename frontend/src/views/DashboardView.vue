@@ -29,7 +29,7 @@ async function load() {
       { name: '支出', type: 'line', data: data.value.trend7.map((i) => i.expense) },
       { name: '净营业', type: 'line', data: data.value.trend7.map((i) => i.net) },
     ],
-  })
+  }, { notMerge: true })
 }
 
 onMounted(load)
