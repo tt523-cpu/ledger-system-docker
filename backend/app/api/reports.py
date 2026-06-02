@@ -648,6 +648,7 @@ def _payment_balances_core(
     bill_date: str,
     tenant_id: int | None,
     allowed: list[int] | None,
+    db: Session,
     shift_id: int | None = None,
     payment_method_id: int | None = None,
 ):
