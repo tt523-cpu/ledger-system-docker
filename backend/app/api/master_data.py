@@ -887,7 +887,14 @@ def create_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles({UserRole.ADMIN.value})),
 ):
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
     tenant_id = _require_current_tenant_id(db, current_user)
+    exists = db.execute(select(Account.id).where(Account.name == name, Account.tenant_id == tenant_id)).scalar_one_or_none()
+    if exists is not None:
+        raise HTTPException(status_code=400, detail="账户名称已存在")
+    payload.name = name
     obj = Account(tenant_id=tenant_id, **payload.model_dump())
     db.add(obj)
     db.commit()
@@ -913,6 +920,12 @@ def update_account(
 ):
     tenant_id = get_current_tenant_id(db, current_user)
     obj = _must_get_tenant_row(db, Account, account_id, tenant_id, "account not found")
+    name = (payload.name or "").strip()
+    if name:
+        exists = db.execute(select(Account.id).where(Account.name == name, Account.tenant_id == obj.tenant_id, Account.id != account_id)).scalar_one_or_none()
+        if exists is not None:
+            raise HTTPException(status_code=400, detail="账户名称已存在")
+        payload.name = name
     for k, v in payload.model_dump().items():
         setattr(obj, k, v)
     db.commit()
