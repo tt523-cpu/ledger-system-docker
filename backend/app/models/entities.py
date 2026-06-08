@@ -277,6 +277,21 @@ class HandoverPaymentSnapshot(Base):
     closing_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
 
 
+class ReportExcelShare(Base):
+    __tablename__ = "report_excel_shares"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    file_path: Mapped[str] = mapped_column(String(500))
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
+
+
 class MonthLock(Base):
     __tablename__ = "month_locks"
 

@@ -1,25 +1,87 @@
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
+from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill, Side, Border
 from sqlalchemy import extract, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_accessible_platform_ids, get_current_tenant_id, require_module, require_roles
-from app.models.entities import AccountSnapshot, AuditLog, Category, DailySummary, PaymentMethod, Platform, Shift, Tenant, TenantPlatformAccess, Transaction, User
+from app.core.time_utils import beijing_now
+from app.models.entities import AccountSnapshot, AuditLog, Category, DailySummary, PaymentMethod, Platform, ReportExcelShare, Shift, Tenant, TenantPlatformAccess, Transaction, User
 from app.models.enums import UserRole
 
 
 router = APIRouter(prefix="/exports", tags=["exports"])
+PUBLIC_ROUTER = APIRouter(prefix="/public", tags=["public"])
+SHARED_REPORT_DIR = Path("shared_reports")
+EXCEL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def apply_money_format(ws, cols: list[int], start_row: int = 2):
     for r in range(start_row, ws.max_row + 1):
         for c in cols:
             ws.cell(row=r, column=c).number_format = "0.00"
+
+
+THIN_BORDER = Border(
+    left=Side(style="thin", color="D9E2EC"),
+    right=Side(style="thin", color="D9E2EC"),
+    top=Side(style="thin", color="D9E2EC"),
+    bottom=Side(style="thin", color="D9E2EC"),
+)
+HEADER_FILL = PatternFill("solid", fgColor="F5F7FA")
+SECTION_FILL = PatternFill("solid", fgColor="EEF2F7")
+WARNING_FILL = PatternFill("solid", fgColor="FFF4E5")
+
+
+def _money(value) -> float:
+    return float(value or 0)
+
+
+def _style_range(ws, row_start: int, row_end: int, col_start: int, col_end: int):
+    for row in ws.iter_rows(min_row=row_start, max_row=row_end, min_col=col_start, max_col=col_end):
+        for cell in row:
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+
+
+def _append_section_title(ws, title: str, columns: int = 6):
+    ws.append([title])
+    row = ws.max_row
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=columns)
+    cell = ws.cell(row=row, column=1)
+    cell.fill = SECTION_FILL
+    cell.font = Font(bold=True)
+    _style_range(ws, row, row, 1, columns)
+
+
+def _append_table(ws, headers: list[str], rows: list[list], money_cols: list[int] | None = None, summary_rows: set[int] | None = None):
+    ws.append(headers)
+    header_row = ws.max_row
+    for col in range(1, len(headers) + 1):
+        cell = ws.cell(row=header_row, column=col)
+        cell.fill = HEADER_FILL
+        cell.font = Font(bold=True)
+    for row in rows:
+        ws.append(row)
+    end_row = ws.max_row
+    _style_range(ws, header_row, end_row, 1, len(headers))
+    if money_cols:
+        for row_idx in range(header_row + 1, end_row + 1):
+            for col in money_cols:
+                ws.cell(row=row_idx, column=col).number_format = "0.00"
+    if summary_rows:
+        for row_idx in summary_rows:
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=row_idx, column=col).fill = SECTION_FILL
+                ws.cell(row=row_idx, column=col).font = Font(bold=True)
+    ws.append([])
 
 
 def _scoped_platform_ids(db: Session, current_user: User) -> list[int] | None:
@@ -90,15 +152,16 @@ def export_daily_excel(
     )
 
 
-@router.get("/report-query-excel")
-def export_report_query_excel(
+def _build_report_query_excel(
     start_date: str,
     end_date: str,
     shift_id: int | None = None,
     platform_id: int | None = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_module("reports.query")),
-):
+    db: Session | None = None,
+    current_user: User | None = None,
+) -> tuple[BytesIO, str]:
+    assert db is not None
+    assert current_user is not None
     allowed = _scoped_platform_ids(db, current_user)
     tenant_id = get_current_tenant_id(db, current_user)
     if allowed == []:
@@ -106,7 +169,9 @@ def export_report_query_excel(
     wb = Workbook()
     ws = wb.active
     ws.title = "报表查询"
-    ws.append(["日期", "班次", "平台", "充值", "支出", "净营业"])
+    ws.sheet_view.showGridLines = False
+    for col, width in {"A": 18, "B": 18, "C": 26, "D": 18, "E": 34, "F": 18}.items():
+        ws.column_dimensions[col].width = width
 
     stmt = select(DailySummary).where(DailySummary.bill_date >= start_date, DailySummary.bill_date <= end_date)
     if allowed is not None:
@@ -123,6 +188,48 @@ def export_report_query_excel(
         shift_stmt = shift_stmt.where(Shift.tenant_id == tenant_id)
     platform_map = {r[0]: r[1] for r in db.execute(platform_stmt).all()}
     shift_map = {r[0]: r[1] for r in db.execute(shift_stmt).all()}
+
+    total_income = sum(_money(r.total_income) for r in rows)
+    total_expense = sum(_money(r.total_expense) for r in rows)
+    total_net = sum(_money(r.net_profit) for r in rows)
+
+    is_day_report = start_date == end_date
+    summary_row = ws.max_row + 1
+    ws.append([f"充值合计：{total_income:.2f}", "", f"支出合计：{total_expense:.2f}", "", f"净营业：{total_net:.2f}", ""])
+    ws.merge_cells(start_row=summary_row, start_column=1, end_row=summary_row, end_column=2)
+    ws.merge_cells(start_row=summary_row, start_column=3, end_row=summary_row, end_column=4)
+    ws.merge_cells(start_row=summary_row, start_column=5, end_row=summary_row, end_column=6)
+    for col in (1, 3, 5):
+        cell = ws.cell(row=summary_row, column=col)
+        cell.font = Font(bold=True)
+        cell.fill = HEADER_FILL
+    _style_range(ws, summary_row, summary_row, 1, 6)
+    ws.append([])
+
+    platform_summary_stmt = select(
+        DailySummary.platform_id,
+        func.sum(DailySummary.total_income),
+        func.sum(DailySummary.total_expense),
+        func.sum(DailySummary.net_profit),
+    ).where(DailySummary.bill_date >= start_date, DailySummary.bill_date <= end_date)
+    if allowed is not None:
+        platform_summary_stmt = platform_summary_stmt.where(DailySummary.platform_id.in_(allowed))
+    if shift_id:
+        platform_summary_stmt = platform_summary_stmt.where(DailySummary.shift_id == shift_id)
+    if platform_id:
+        platform_summary_stmt = platform_summary_stmt.where(DailySummary.platform_id == platform_id)
+    platform_summary_rows = db.execute(platform_summary_stmt.group_by(DailySummary.platform_id).order_by(DailySummary.platform_id.asc())).all()
+
+    _append_section_title(ws, "按平台汇总")
+    _append_table(
+        ws,
+        ["平台", "充值", "支出", "净营业"],
+        [
+            [platform_map.get(r[0], f"平台#{r[0]}"), _money(r[1]), _money(r[2]), _money(r[3])]
+            for r in platform_summary_rows
+        ],
+        money_cols=[2, 3, 4],
+    )
 
     category_map = {c.id: c.name for c in db.execute(_tenant_select(Category, tenant_id)).scalars().all()}
     row_expense_stmt = select(
@@ -163,35 +270,46 @@ def export_report_query_excel(
         detail = f"{item_name}:{float(amount_sum or 0):.2f}"
         expense_detail_map.setdefault(key, []).append(detail)
 
+    detail_rows = []
     for row in rows:
         key = (row.bill_date.isoformat(), int(row.shift_id), int(row.platform_id))
         expense_details = "，".join(expense_detail_map.get(key, []))
-        expense_cell = f"{float(row.total_expense):.2f}"
+        expense_cell = f"{_money(row.total_expense):.2f}"
         if expense_details:
-            expense_cell = f"{float(row.total_expense):.2f}（{expense_details}）"
-        ws.append([
-            row.bill_date.isoformat(),
-            shift_map.get(row.shift_id, row.shift_id),
-            platform_map.get(row.platform_id, f"平台#{row.platform_id}"),
-            float(row.total_income or 0),
-            expense_cell,
-            float(row.net_profit or 0),
-        ])
-    apply_money_format(ws, [4, 6])
+            expense_cell = f"{_money(row.total_expense):.2f}（{expense_details}）"
+        detail_rows.append(
+            [
+                row.bill_date.isoformat(),
+                shift_map.get(row.shift_id, row.shift_id),
+                platform_map.get(row.platform_id, f"平台#{row.platform_id}"),
+                _money(row.total_income),
+                expense_cell,
+                _money(row.net_profit),
+            ]
+        )
+    _append_table(ws, ["日期", "班次", "平台", "充值", "支出", "净营业"], detail_rows, money_cols=[4, 6])
 
-    ws_bal = wb.create_sheet("账户余额")
-    ws_bal.append(["账户", "通道类型", "期初余额", "充值", "支出", "期末余额"])
+    if not is_day_report:
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        filename = f"report-{start_date}-to-{end_date}.xlsx"
+        return output, filename
+
+    _append_section_title(ws, "账户余额（当日）")
     methods = db.execute(_tenant_select(PaymentMethod, tenant_id).where(PaymentMethod.status == "enabled")).scalars().all()
     total_opening = 0.0
     total_recharge = 0.0
     total_payout = 0.0
     total_closing = 0.0
+    balance_rows = []
+    channel_subtotals: dict[str, dict[str, float]] = {}
     for pm in methods:
         before_row = db.execute(
             select(func.sum(Transaction.amount), Transaction.type)
             .where(
                 Transaction.payment_method_id == pm.id,
-                Transaction.bill_date < end_date,
+                Transaction.bill_date < start_date,
                 Transaction.deleted_at.is_(None),
                 Transaction.platform_id.in_(allowed) if allowed is not None else True,
             )
@@ -219,26 +337,199 @@ def export_report_query_excel(
         payout = 0.0
         for amount_sum, tx_type in range_row:
             if tx_type == "income":
-                recharge += float(amount_sum or 0)
+                recharge += _money(amount_sum)
             elif tx_type == "expense":
-                payout += float(amount_sum or 0)
+                payout += _money(amount_sum)
+        expense_detail_rows = db.execute(
+            select(Transaction.category_id, Transaction.biz_type_label, func.sum(Transaction.amount))
+            .where(
+                Transaction.payment_method_id == pm.id,
+                Transaction.bill_date >= start_date,
+                Transaction.bill_date <= end_date,
+                Transaction.deleted_at.is_(None),
+                Transaction.type == "expense",
+                Transaction.platform_id.in_(allowed) if allowed is not None else True,
+            )
+            .group_by(Transaction.category_id, Transaction.biz_type_label)
+        ).all()
+        payout_details = []
+        for category_id_val, biz_type_label_val, amount_sum in expense_detail_rows:
+            if category_id_val is None:
+                item_name = (biz_type_label_val or "-").strip() or "-"
+            else:
+                item_name = category_map.get(category_id_val, f"项目#{category_id_val}")
+            payout_details.append(f"{item_name}:{_money(amount_sum):.2f}")
+        payout_cell = f"{payout:.2f}"
+        if payout_details:
+            payout_cell = f"{payout:.2f}（{'，'.join(payout_details)}）"
         closing = opening + recharge - payout
         total_opening += opening
         total_recharge += recharge
         total_payout += payout
         total_closing += closing
-        ws_bal.append([pm.name, pm.channel_kind, opening, recharge, payout, closing])
-    ws_bal.append(["总计", "-", total_opening, total_recharge, total_payout, total_closing])
-    apply_money_format(ws_bal, [3, 4, 5, 6])
+        balance_rows.append([pm.name, pm.channel_kind, opening, recharge, payout_cell, closing])
+
+        channel_key = pm.channel_kind or "other"
+        if channel_key not in channel_subtotals:
+            channel_subtotals[channel_key] = {"opening": 0.0, "recharge": 0.0, "payout": 0.0, "closing": 0.0}
+        channel_subtotals[channel_key]["opening"] += opening
+        channel_subtotals[channel_key]["recharge"] += recharge
+        channel_subtotals[channel_key]["payout"] += payout
+        channel_subtotals[channel_key]["closing"] += closing
+    balance_rows.append(["总计", "-", total_opening, total_recharge, f"{total_payout:.2f}", total_closing])
+    balance_summary_row = ws.max_row + 1 + len(balance_rows)
+    _append_table(
+        ws,
+        ["账户", "通道类型", "期初余额", "充值", "支出", "期末余额"],
+        balance_rows,
+        money_cols=[3, 4, 6],
+        summary_rows={balance_summary_row},
+    )
+
+    channel_rows = [
+        [channel, values["opening"], values["recharge"], values["payout"], values["closing"]]
+        for channel, values in channel_subtotals.items()
+    ]
+    _append_table(
+        ws,
+        ["通道类型小计", "期初小计", "充值小计", "支出小计", "期末小计"],
+        channel_rows,
+        money_cols=[2, 3, 4, 5],
+    )
+
+    _append_section_title(ws, "交班营业报表（当日）")
+    shift_rows = db.execute(
+        select(DailySummary.shift_id, func.sum(DailySummary.total_income), func.sum(DailySummary.total_expense), func.sum(DailySummary.net_profit))
+        .where(DailySummary.bill_date == start_date, DailySummary.platform_id.in_(allowed) if allowed is not None else True)
+        .group_by(DailySummary.shift_id)
+        .order_by(DailySummary.shift_id.asc())
+    ).all()
+    shift_expense_rows = db.execute(
+        select(Transaction.shift_id, Transaction.category_id, Transaction.biz_type_label, func.sum(Transaction.amount))
+        .where(
+            Transaction.bill_date == start_date,
+            Transaction.type == "expense",
+            Transaction.deleted_at.is_(None),
+            Transaction.platform_id.in_(allowed) if allowed is not None else True,
+        )
+        .group_by(Transaction.shift_id, Transaction.category_id, Transaction.biz_type_label)
+    ).all()
+    shift_expense_map: dict[int, list[str]] = {}
+    for shift_id_val, category_id_val, biz_type_label_val, amount_sum in shift_expense_rows:
+        if category_id_val is None:
+            item_name = (biz_type_label_val or "-").strip() or "-"
+        else:
+            item_name = category_map.get(category_id_val, f"项目#{category_id_val}")
+        shift_expense_map.setdefault(int(shift_id_val), []).append(f"{item_name}:{_money(amount_sum):.2f}")
+    handover_rows = []
+    for r in shift_rows:
+        expense = _money(r[2])
+        expense_cell = f"{expense:.2f}"
+        details = "，".join(shift_expense_map.get(int(r[0]), []))
+        if details:
+            expense_cell = f"{expense:.2f}（{details}）"
+        handover_rows.append([shift_map.get(r[0], r[0]), _money(r[1]), expense_cell, _money(r[3])])
+    _append_table(ws, ["班次", "充值", "支出", "营业额"], handover_rows, money_cols=[2, 4])
 
     output = BytesIO()
     wb.save(output)
     output.seek(0)
     filename = f"report-{start_date}-to-{end_date}.xlsx"
+    return output, filename
+
+
+@router.get("/report-query-excel")
+def export_report_query_excel(
+    start_date: str,
+    end_date: str,
+    shift_id: int | None = None,
+    platform_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_module("reports.query")),
+):
+    output, filename = _build_report_query_excel(
+        start_date=start_date,
+        end_date=end_date,
+        shift_id=shift_id,
+        platform_id=platform_id,
+        db=db,
+        current_user=current_user,
+    )
     return StreamingResponse(
         output,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        media_type=EXCEL_MEDIA_TYPE,
         headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.post("/report-query-share-excel")
+def share_report_query_excel(
+    start_date: str,
+    end_date: str,
+    shift_id: int | None = None,
+    platform_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_module("reports.query")),
+):
+    output, filename = _build_report_query_excel(
+        start_date=start_date,
+        end_date=end_date,
+        shift_id=shift_id,
+        platform_id=platform_id,
+        db=db,
+        current_user=current_user,
+    )
+
+    SHARED_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    token = uuid4().hex
+    stored_filename = f"{token}.xlsx"
+    file_path = SHARED_REPORT_DIR / stored_filename
+    file_path.write_bytes(output.getvalue())
+
+    share = ReportExcelShare(
+        token=token,
+        tenant_id=get_current_tenant_id(db, current_user),
+        created_by=current_user.id,
+        filename=filename,
+        file_path=str(file_path),
+        start_date=date.fromisoformat(start_date),
+        end_date=date.fromisoformat(end_date),
+        expires_at=beijing_now() + timedelta(days=7),
+    )
+    db.add(share)
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            module="report_share",
+            action="create_excel_share",
+            before_data=None,
+            after_data=f"token={token},start={start_date},end={end_date}",
+        )
+    )
+    db.commit()
+    return {
+        "token": token,
+        "filename": filename,
+        "url": f"/api/public/report-excel/{token}",
+        "expires_at": share.expires_at,
+    }
+
+
+@PUBLIC_ROUTER.get("/report-excel/{token}")
+def download_shared_report_excel(token: str, db: Session = Depends(get_db)):
+    share = db.execute(select(ReportExcelShare).where(ReportExcelShare.token == token)).scalar_one_or_none()
+    if share is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="分享链接不存在")
+    if share.expires_at < beijing_now():
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="分享链接已过期")
+
+    file_path = Path(share.file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="分享文件不存在")
+    return FileResponse(
+        path=file_path,
+        media_type=EXCEL_MEDIA_TYPE,
+        filename=share.filename,
     )
 
 

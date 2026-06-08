@@ -6,6 +6,7 @@ from starlette.responses import Response
 
 from app.api.auth import router as auth_router
 from app.api.balances import router as balances_router
+from app.api.exports import PUBLIC_ROUTER as public_exports_router
 from app.api.exports import router as exports_router
 from app.api.master_data import router as master_router
 from app.api.reports import router as reports_router
@@ -18,6 +19,7 @@ from app.core.database import SessionLocal
 from app.core.security import decode_token
 from app.models.entities import OperationLog, Tenant, TenantPlatformAccess, User, UserTenantAccess
 from app.models.enums import UserRole
+from app.services.auto_handover import start_auto_handover_worker, stop_auto_handover_worker
 from sqlalchemy import select
 
 
@@ -47,6 +49,16 @@ finally:
     db.close()
 
 app = FastAPI(title=settings.app_name)
+
+
+@app.on_event("startup")
+def start_background_workers():
+    start_auto_handover_worker()
+
+
+@app.on_event("shutdown")
+def stop_background_workers():
+    stop_auto_handover_worker()
 
 
 @app.middleware("http")
@@ -108,3 +120,4 @@ app.include_router(reports_router)
 app.include_router(balances_router)
 app.include_router(exports_router)
 app.include_router(system_router)
+app.include_router(public_exports_router)

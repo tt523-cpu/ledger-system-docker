@@ -37,6 +37,8 @@ services:
       MYSQL_HOST: db
       MYSQL_PORT: 3306
       MYSQL_DB: ${MYSQL_DB}
+    volumes:
+      - shared_reports:/app/shared_reports
 
   frontend:
     image: tt523-cpu/ledger-system-frontend:latest
@@ -52,3 +54,4 @@ services:
 
 volumes:
   mysql_data:
+  shared_reports:

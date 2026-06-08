@@ -20,6 +20,7 @@ const paymentBalances = ref([])
 const handover = ref({ shifts: [] })
 const confirmedInfo = ref({ confirmed: false })
 const loading = ref(false)
+const sharing = ref(false)
 const shifts = ref([])
 const platforms = ref([])
 const selectedShiftId = ref('')
@@ -145,6 +146,38 @@ async function exportExcel() {
   await downloadFile(`/exports/report-query-excel?${q}`, `report-${lastQuery.value.start_date}-to-${lastQuery.value.end_date}.xlsx`)
 }
 
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const input = document.createElement('textarea')
+  input.value = text
+  input.setAttribute('readonly', '')
+  input.style.position = 'fixed'
+  input.style.opacity = '0'
+  document.body.appendChild(input)
+  input.select()
+  document.execCommand('copy')
+  input.remove()
+}
+
+async function shareExcel() {
+  if (!lastQuery.value.start_date) {
+    ElMessage.warning('请先点查询，再分享Excel')
+    return
+  }
+  sharing.value = true
+  try {
+    const { data } = await http.post('/exports/report-query-share-excel', null, { params: lastQuery.value })
+    const link = `${window.location.origin}${data.url}`
+    await copyText(link)
+    ElMessage.success('分享链接已复制，发给对方即可免登录下载Excel')
+  } finally {
+    sharing.value = false
+  }
+}
+
 async function loadShifts() {
   const { data } = await http.get('/master/shifts')
   shifts.value = data
@@ -225,18 +258,11 @@ async function confirmHandover() {
       <el-form-item class="page-actions">
         <el-button type="primary" :loading="loading" @click="search">查询</el-button>
         <el-button @click="exportExcel">导出Excel</el-button>
+        <el-button :loading="sharing" @click="shareExcel">分享Excel</el-button>
         <el-button v-if="mode==='day'" type="success" @click="confirmHandover">确认交班</el-button>
         <el-button v-if="mode==='day'" @click="exportHandover">导出交班报表</el-button>
       </el-form-item>
     </el-form>
-
-    <el-alert
-      v-if="mode==='day'"
-      :title="confirmedInfo.confirmed ? `已交班：${confirmedInfo.confirmed_at || ''}` : '未交班：当前为实时数据'"
-      :type="confirmedInfo.confirmed ? 'success' : 'warning'"
-      show-icon
-      style="margin-bottom: 10px"
-    />
 
     <el-row :gutter="10" style="margin: 8px 0 12px">
       <el-col :span="8"><el-card>充值合计：{{ fmtAmount(summary.income) }}</el-card></el-col>

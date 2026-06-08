@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_db: str = "accounting"
+    auto_handover_enabled: bool = True
+    auto_handover_interval_seconds: int = 60
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
