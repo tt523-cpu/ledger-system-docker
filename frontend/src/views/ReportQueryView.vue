@@ -191,14 +191,6 @@ async function loadPlatforms() {
 loadShifts()
 loadPlatforms()
 
-async function exportHandover() {
-  if (!lastQuery.value.start_date || lastQuery.value.start_date !== lastQuery.value.end_date) {
-    ElMessage.warning('交班报表仅支持按天查询后导出')
-    return
-  }
-  await downloadFile(`/exports/handover-excel?bill_date=${lastQuery.value.start_date}`, `handover-${lastQuery.value.start_date}.xlsx`)
-}
-
 async function downloadFile(url, filename) {
   const res = await http.get(url, { responseType: 'blob' })
   const ct = res.headers['content-type'] || ''
@@ -260,7 +252,6 @@ async function confirmHandover() {
         <el-button @click="exportExcel">导出Excel</el-button>
         <el-button :loading="sharing" @click="shareExcel">分享Excel</el-button>
         <el-button v-if="mode==='day'" type="success" @click="confirmHandover">确认交班</el-button>
-        <el-button v-if="mode==='day'" @click="exportHandover">导出交班报表</el-button>
       </el-form-item>
     </el-form>
 
