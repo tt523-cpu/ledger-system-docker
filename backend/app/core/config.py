@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     mysql_db: str = "accounting"
     auto_handover_enabled: bool = True
     auto_handover_interval_seconds: int = 60
+    deepseek_api_key: str | None = None
+    deepseek_api_base: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-pro"
+    qwen_api_key: str | None = None
+    qwen_api_base: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwen_vision_model: str = "qwen3.7-plus"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

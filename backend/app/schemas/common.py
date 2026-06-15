@@ -1,5 +1,6 @@
 from datetime import date, time
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -50,6 +51,7 @@ class ShiftCreate(BaseModel):
 class TransactionLineCreate(BaseModel):
     type: str
     type_label: str | None = None
+    platform_id: int | None = None
     category_id: int | None = None
     amount: Decimal = Field(gt=0)
     account_id: int | None = None
@@ -63,6 +65,20 @@ class BatchTransactionCreate(BaseModel):
     shift_id: int
     platform_id: int | None = None
     lines: list[TransactionLineCreate]
+
+
+class TransactionAIParseRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+
+
+class TransactionImportNormalizeRequest(BaseModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ImportAliasCreate(BaseModel):
+    alias_type: str = Field(pattern="^(platform|entry_type|category|payment_method)$")
+    alias_name: str = Field(min_length=1, max_length=100)
+    target_id: int
 
 
 class DailySummaryOut(BaseModel):

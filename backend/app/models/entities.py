@@ -159,6 +159,18 @@ class EntryTypeSetting(Base):
     requires_category: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class ImportAlias(Base, TimestampMixin):
+    __tablename__ = "import_aliases"
+    __table_args__ = (UniqueConstraint("tenant_id", "alias_type", "alias_name", name="uq_import_aliases_tenant_type_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    alias_type: Mapped[str] = mapped_column(String(30), index=True)
+    alias_name: Mapped[str] = mapped_column(String(100))
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
 class Transaction(Base, TimestampMixin):
     __tablename__ = "transactions"
 
