@@ -183,6 +183,21 @@ async function beforeImportImage(file) {
   return false
 }
 
+async function handlePasteImage(event) {
+  const items = Array.from(event.clipboardData?.items || [])
+  const imageItem = items.find((item) => item.type?.startsWith('image/'))
+  if (!imageItem) return
+  event.preventDefault()
+  const file = imageItem.getAsFile()
+  if (!file) {
+    ElMessage.warning('没有读取到剪贴板图片')
+    return
+  }
+  const ext = file.type.split('/')[1] || 'png'
+  const pastedFile = new File([file], `pasted-import.${ext}`, { type: file.type })
+  await beforeImportImage(pastedFile)
+}
+
 function applyImport() {
   if (importPreview.value.length === 0) {
     ElMessage.warning('请先识别预览')
@@ -403,7 +418,7 @@ onMounted(loadMaster)
       <el-button type="primary" @click="submit">保存并继续</el-button>
     </div>
 
-    <el-dialog v-model="importVisible" title="AI导入中心" width="1120px">
+    <el-dialog v-model="importVisible" title="AI导入中心" width="1120px" @paste="handlePasteImage">
       <el-alert
         title="可上传图片让千问AI识别，也可以粘贴文字后AI整理。导入后请核对，再点击保存。"
         type="info"
@@ -417,6 +432,9 @@ onMounted(loadMaster)
         <el-upload :before-upload="beforeImportFile" accept=".txt,.csv" :show-file-list="false">
           <el-button>上传TXT/CSV</el-button>
         </el-upload>
+      </div>
+      <div class="paste-image-zone" tabindex="0" @paste="handlePasteImage">
+        点击这里后，可 Ctrl+V 或右键粘贴截图；也可以继续使用上方按钮上传图片。
       </div>
       <el-input
         v-model="importText"
@@ -500,6 +518,20 @@ onMounted(loadMaster)
   color: #909399;
   font-size: 12px;
   line-height: 1.2;
+}
+
+.paste-image-zone {
+  border: 1px dashed #409eff;
+  border-radius: 6px;
+  color: #606266;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.paste-image-zone:focus {
+  background: #ecf5ff;
+  border-color: #337ecc;
 }
 
 :deep(.is-unmatched .el-select__wrapper) {
